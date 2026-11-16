@@ -38,6 +38,13 @@ It contains no YouTube code and shows no ads.
 - Shorts shelves (a two-column grid when a Shorts filter is on), community posts with polls, and playlists in the feed
 - Long-press menus on videos: Watch Later, playlists, share, download and feedback
 
+### Twitch
+- Live streams, clips and past broadcasts in the same player as YouTube, without ads
+- Live chat shared with YouTube's, including Super Chats, Bits, subs and raids
+- Sign in with a device code. Followed live channels appear on Home as Jump Back In
+- Twitch results in search and Up Next, a Streams filter, and creator pages
+- Not verified on a device yet. See [ROADMAP.md](app/ROADMAP.md)
+
 ### Player
 - mpv engine with up to the quality you choose
 - Playback speed, captions, audio tracks, chapters and thumbnail previews while seeking
@@ -46,10 +53,11 @@ It contains no YouTube code and shows no ads.
 - Miniplayer that floats above the tabs, with light from the video behind it and a progress line on its edge. Drag it to the bottom of the screen to close it
 - Watch Together: watch the same video in sync with friends in a room, from the ••• menu
 - Sleep timer and autoplay
+- Reads less ahead on cellular and hotspots (30 seconds or 50 MB) than on Wi-Fi (2 minutes or 200 MB)
 
 ### Video page
 - Likes, dislike estimates, subscribe, Watch Later, playlists and share
-- Comments and replies, with likes
+- Comments and replies, with likes. A time in a comment or description plays from there
 - Up Next, channel pages and search inside a channel
 
 ### Shorts
@@ -87,7 +95,7 @@ It contains no YouTube code and shows no ads.
 
 ## Privacy
 
-- The app has no analytics and no server of its own. It talks to YouTube directly.
+- The app has no analytics and no server of its own. It talks to YouTube and Twitch directly.
 - SponsorBlock and Return YouTube Dislike receive the ID of each video you watch. Turn them off in Settings to stop that.
 - DeArrow is off by default. When on, its title list receives part of a code shared by many videos, and its thumbnail server receives the ID of each video with a new thumbnail, also in Incognito.
 - Watch Together sends your room code, the video and its playback position to a Metrolist server. The server can be changed in Settings > Integrations.
@@ -121,7 +129,7 @@ Google can challenge or restrict an account used in an unofficial app, and posti
 
 ## Project status
 
-Version 1.3. Each feature still needs testing on more devices. [ROADMAP.md](app/ROADMAP.md) lists what is verified and what is missing.
+Version 1.6. Each feature still needs testing on more devices. [ROADMAP.md](app/ROADMAP.md) lists what is verified and what is missing.
 
 ## Credits
 
