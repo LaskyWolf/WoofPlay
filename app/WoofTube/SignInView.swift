@@ -119,3 +119,19 @@ private struct GoogleSignInWebView: UIViewRepresentable {
         }
     }
 }
+
+/// YouTube Studio, where the channel picture is changed: Customization, then Profile, then Picture.
+/// No API can change it. The default website data store holds the Google sign-in, so Studio opens
+/// signed in, unless Add Account has emptied it since.
+struct ProfilePictureWebView: UIViewRepresentable {
+    func makeUIView(context: Context) -> WKWebView {
+        let webView = WKWebView()
+        // The sign-in's desktop agent, so Studio serves its web editor.
+        webView.customUserAgent = LoginWebviewHarvest.userAgent
+        webView.allowsBackForwardNavigationGestures = true
+        webView.load(URLRequest(url: URL(string: "https://studio.youtube.com/")!))
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+}

@@ -359,6 +359,7 @@ private struct SearchResults: View {
     @Environment(Router.self) private var router
     @State private var model = FeedModel()
     @State private var creators: [YouTubeChannel] = []
+    @State private var streams: [TwitchChannel] = []
 
     /// YouTube has no such filter, so this drops what its progress or this phone says was seen.
     private var keeps: ((FeedItem) -> Bool)? {
@@ -370,19 +371,26 @@ private struct SearchResults: View {
     }
 
     var body: some View {
-        FeedContent(model: model, retry: { await load() }, isCompact: filter == .history, keeps: keeps, shortsGrid: filter == .shorts) {
+        FeedContent(model: model, retry: { await load() }, isCompact: filter == .history, keeps: keeps, shortsGrid: filter == .shorts, mixedIn: streams) {
             creatorCards
         }
         .task(id: filter) { await load() }
     }
 
     private func load() async {
+        // Asked alongside YouTube, and only where a live stream belongs among the results.
+        let wantsStreams = filter == nil || filter == .live
+        let query = query
+        async let twitchFound: [TwitchChannel] = wantsStreams ? Twitch.search(query) : []
         if filter == .history {
             await model.load(.scoped(browseId: YouTubeFeeds.history, query: query))
         } else {
             await model.load(.search(query, params: filter?.params))
         }
         if let keeps { await model.loadUntilMatch(keeps) }
+        let live = await twitchFound
+        guard !Task.isCancelled else { return }
+        streams = live
         guard filter == nil else {
             creators = []
             return

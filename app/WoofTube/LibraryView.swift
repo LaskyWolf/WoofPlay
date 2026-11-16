@@ -13,6 +13,8 @@ struct LibraryView: View {
     @Environment(Router.self) private var router
     @ObservedObject private var downloads = DownloadStore.shared
     private var subscriptions: Subscriptions { .shared }
+    /// Followed on Twitch; the ones whose YouTube channel is already here are left out.
+    @State private var twitchFollows: [TwitchFollow] = []
     @State private var history = FeedModel()
     @State private var liked = FeedModel()
     /// Coming back from a pushed page or another tab shows what's already here.
@@ -20,6 +22,9 @@ struct LibraryView: View {
     private static let reloadAfter: TimeInterval = 60
     @State private var watchLater = FeedModel()
     @State private var playlists: [YouTubePlaylist] = []
+    /// "12 videos" by playlist id. The list's own line under each playlist only says "View full playlist".
+    @State private var videoCounts: [String: String] = [:]
+    @EnvironmentObject private var settings: AppSettings
     @State private var isLoadingPlaylists = true
     @State private var musicPlaylistIds: Set<String> = []
     @State private var selectedFilter: Filter?
@@ -74,7 +79,7 @@ struct LibraryView: View {
                     selectedFilter = selectedFilter == filter ? nil : filter
                 }
             })
-            .refreshable { await load() }
+            .tappingRefresh { await load() }
             .task {
                 guard Date().timeIntervalSince(lastLoad) > Self.reloadAfter else { return }
                 lastLoad = Date()
@@ -112,8 +117,10 @@ struct LibraryView: View {
         async let likedLoad: Void = liked.load(.browse(YouTubeFeeds.playlistBrowseId(YouTubeFeeds.likedVideosPlaylistId)))
         async let laterLoad: Void = watchLater.load(.browse(YouTubeFeeds.playlistBrowseId(YouTubeFeeds.watchLaterPlaylistId)))
         async let channelsLoad: Void = subscriptions.load()
+        async let followsLoad = (try? await TwitchAccount.shared.followed()) ?? []
         await loadPlaylists()
         _ = await (historyLoad, likedLoad, laterLoad, channelsLoad)
+        twitchFollows = await followsLoad
         if liked.videos.isEmpty {
             await liked.load(.browse(YouTubeFeeds.playlistBrowseId(YouTubeFeeds.likedVideosPlaylistId)))
         }
@@ -122,7 +129,9 @@ struct LibraryView: View {
     private func loadPlaylists() async {
         let json = try? await InnerTubeClient.wooftube.browse(browseId: "FEplaylist_aggregation")
         // A failed refresh leaves the list on screen.
-        if let json { playlists = await offMain { YouTubeFeedParser.playlists(in: json) } }
+        if let json {
+            (playlists, videoCounts) = await offMain { (YouTubeFeedParser.playlists(in: json), Self.videoCounts(in: json)) }
+        }
         isLoadingPlaylists = false
         for playlist in playlists where !LibraryPlaylists.isHidden(playlist.playlistId) {
             if await LibraryPlaylists.isMusicOnly(playlist) {
@@ -185,21 +194,64 @@ struct LibraryView: View {
 
     // MARK: Sections
 
+    /// The count on each playlist's cover badge, by playlist id.
+    nonisolated private static func videoCounts(in json: Any) -> [String: String] {
+        var counts: [String: String] = [:]
+        func walk(_ node: Any) {
+            if let dict = node as? [String: Any] {
+                if let lockup = dict["lockupViewModel"] as? [String: Any], let id = lockup["contentId"] as? String,
+                   let text = JSON.string("text", in: JSON.first("thumbnailBadgeViewModel", in: lockup)) {
+                    counts[id] = text
+                }
+                dict.values.forEach(walk)
+            } else if let array = node as? [Any] {
+                array.forEach(walk)
+            }
+        }
+        walk(json)
+        return counts
+    }
+
+    private func countText(of playlist: YouTubePlaylist) -> String? {
+        let id = playlist.playlistId
+        return videoCounts[id] ?? videoCounts[String(id.dropFirst(id.hasPrefix("VL") ? 2 : 0))] ?? playlist.videoCountText
+    }
+
+    private static let gridColumns = Array(repeating: GridItem(.flexible(), spacing: Layout.sectionGap, alignment: .top), count: 2)
+
     private var playlistsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionTitle(title: "Playlists", count: shownPlaylists.count)
             if isLoadingPlaylists {
                 LoadingMediaRows(isCircular: false)
             }
-            LazyVStack(spacing: 0) {
+            if settings.libraryLayout == .grid {
+                LazyVGrid(columns: Self.gridColumns, spacing: Layout.sectionGap) {
+                    playlistItems
+                }
+                .padding(.horizontal, Layout.screenPadding)
+            } else {
+                LazyVStack(spacing: 0) {
+                    playlistItems
+                }
+            }
+        }
+        .padding(.bottom, Layout.sectionGap)
+    }
+
+    private var playlistItems: some View {
                 ForEach(shownPlaylists, id: \.playlistId) { playlist in
                     ZoomLink {
                         PlaylistPage(title: playlist.title, playlistId: playlist.playlistId)
                     } label: {
-                        MediaListRow(url: playlist.thumbnailURL, title: playlist.title, subtitle: playlist.videoCountText)
+                        if settings.libraryLayout == .grid {
+                            PlaylistGridCell(url: playlist.thumbnailURL, title: playlist.title, subtitle: countText(of: playlist))
+                        } else {
+                            MediaListRow(url: playlist.thumbnailURL, title: playlist.title, subtitle: countText(of: playlist))
+                        }
                     }
                     .buttonStyle(ZoomPressStyle(scale: 0.98))
-                    .padding(.horizontal, Layout.screenPadding)
+                    .padding(.horizontal, settings.libraryLayout == .grid ? 0 : Layout.screenPadding)
                     .liftedMenu {
                         Button("Download", systemImage: "arrow.down.to.line") {
                             Task {
@@ -211,15 +263,13 @@ struct LibraryView: View {
                         }
                     }
                 }
-            }
-        }
-        .padding(.bottom, Layout.sectionGap)
     }
 
     private var channelsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SectionTitle(title: "Channels", count: subscriptions.channels.count)
-            if subscriptions.channels.isEmpty {
+            let entries = channelEntries
+            SectionTitle(title: "Channels", count: entries.count)
+            if entries.isEmpty {
                 if subscriptions.isLoading {
                     LoadingMediaRows(isCircular: true)
                 } else {
@@ -230,15 +280,29 @@ struct LibraryView: View {
                 }
             }
             LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(subscriptions.channels, id: \.self) { channel in
-                    Button {
-                        if let id = channel.channelId { router.openChannelPage(id) }
-                    } label: {
-                        ChannelRow(channel: channel, avatarSize: Layout.avatarMedium)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(.rect)
+                ForEach(entries) { entry in
+                    Group {
+                        switch entry {
+                        case .youTube(let channel):
+                            Button {
+                                if let id = channel.channelId { router.openChannelPage(id) }
+                            } label: {
+                                ChannelRow(channel: channel, avatarSize: Layout.avatarMedium, showsGenre: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(.rect)
+                            }
+                            .buttonStyle(ZoomPressStyle(scale: 0.98))
+                        case .twitch(let follow):
+                            ZoomLink(wholeLabel: true) {
+                                TwitchCreatorPage(login: follow.login, name: follow.name, avatar: follow.avatar)
+                            } label: {
+                                TwitchFollowRow(follow: follow)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(.rect)
+                            }
+                            .buttonStyle(ZoomPressStyle(scale: 0.98))
+                        }
                     }
-                    .buttonStyle(ZoomPressStyle(scale: 0.98))
                     .padding(.horizontal, Layout.screenPadding)
                     .padding(.vertical, Layout.rowPadding)
                 }
@@ -247,6 +311,39 @@ struct LibraryView: View {
         .padding(.bottom, Layout.sectionGap)
     }
 
+    private enum ChannelEntry: Identifiable {
+        case youTube(YouTubeChannel)
+        case twitch(TwitchFollow)
+
+        var id: String {
+            switch self {
+            case .youTube(let channel): channel.channelId ?? channel.title
+            case .twitch(let follow): Twitch.videoIdPrefix + follow.login
+            }
+        }
+
+        var name: String {
+            switch self {
+            case .youTube(let channel): channel.title
+            case .twitch(let follow): follow.name
+            }
+        }
+    }
+
+    /// YouTube's channels in their order, with each Twitch-only creator slotted in by name.
+    private var channelEntries: [ChannelEntry] {
+        let keys = Set(subscriptions.channels.flatMap { channel in
+            [channel.channelId, channel.handle.map { "@" + $0.replacingOccurrences(of: "@", with: "") }].compactMap { $0?.lowercased() }
+        })
+        var entries = subscriptions.channels.map(ChannelEntry.youTube)
+        for follow in twitchFollows where follow.youTubeKeys.isDisjoint(with: keys) {
+            let index = entries.firstIndex { $0.name.localizedCaseInsensitiveCompare(follow.name) == .orderedDescending } ?? entries.count
+            entries.insert(.twitch(follow), at: index)
+        }
+        return entries
+    }
+
+    /// A live Twitch channel plays; an offline one opens on Twitch, since only live streams play here.
     private func videoSection(title: String, videos: [(video: YouTubeVideo, extras: VideoExtras)], emptyText: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionTitle(title: title, count: videos.count)
@@ -263,6 +360,8 @@ struct LibraryView: View {
                         .padding(.vertical, Layout.rowPadding)
                 }
             }
+            // The channel's picture on the cover's edge, as on the History page.
+            .environment(\.showsRowAvatars, true)
         }
         .padding(.bottom, Layout.sectionGap)
     }
@@ -478,7 +577,7 @@ struct PlaylistPage: View {
         .detailBarTitle(shownTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
-        .refreshable { await load() }
+        .tappingRefresh { await load() }
         .task {
             if model.items.isEmpty { await load() }
         }
@@ -494,5 +593,84 @@ struct PlaylistPage: View {
                 router.playPlaylist(first, title: shownTitle, model: model)
             }
         }
+    }
+}
+
+/// A Twitch channel among the YouTube ones: the same row, with LIVE on the picture while it streams.
+private struct TwitchFollowRow: View {
+    let follow: TwitchFollow
+
+    var body: some View {
+        HStack(spacing: Layout.menuRowSpacing) {
+            Avatar(url: follow.avatar, size: Layout.avatarMedium)
+                .overlay(alignment: .bottom) {
+                    if follow.live != nil {
+                        Text("LIVE")
+                            .font(.caption2.weight(.heavy))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, Layout.cardSpacing + 1)
+                            .background(.tint, in: .capsule)
+                            .offset(y: Layout.rowPadding)
+                    }
+                }
+            VStack(alignment: .leading, spacing: Layout.cardSpacing) {
+                Text(follow.name)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(follow.live.map { [$0.game, "Twitch"].filter { !$0.isEmpty }.joined(separator: " · ") } ?? "Twitch")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+/// A playlist in Library's grid, as in Woof Music: the cover with two cards stacked behind it,
+/// the title on two lines and the video count.
+private struct PlaylistGridCell: View {
+    let url: String?
+    let title: String
+    let subtitle: String?
+    /// How far each card behind the cover peeks out, and how much narrower it is.
+    private static let step: CGFloat = 4
+    private static let inset: CGFloat = 12
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Layout.cardSpacing) {
+            CoverImage(url: url)
+                .aspectRatio(Layout.videoAspect, contentMode: .fit)
+                .clipShape(.rect(cornerRadius: Layout.tileRadius, style: .continuous))
+                .zoomLinkCover()
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: Layout.tileRadius, style: .continuous)
+                            .fill(Color(.systemGray4))
+                            .padding(.horizontal, Self.inset * 2)
+                            .offset(y: -2 * Self.step)
+                        RoundedRectangle(cornerRadius: Layout.tileRadius, style: .continuous)
+                            .fill(Color(.systemGray2))
+                            .padding(.horizontal, Self.inset)
+                            .offset(y: -Self.step)
+                    }
+                    .accessibilityHidden(true)
+                }
+                .padding(.top, Self.step * 2)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
     }
 }

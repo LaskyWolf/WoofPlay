@@ -121,7 +121,7 @@ struct NotificationsView: View {
             session.unseenNotifications = 0
             await load()
         }
-        .refreshable { await load() }
+        .tappingRefresh { await load() }
         .onDisappear {
             SeenNotifications.add(seenOnPage)
             markRead(seenOnPage)
@@ -225,9 +225,9 @@ private struct NotificationRow: View {
                 if let thumbnail = item.thumbnail, let id = item.videoId {
                     Thumbnail(url: thumbnail, videoId: id, maxPixels: 400)
                         .frame(width: Layout.videoSmall)
-                        .fadesAtTrailing()
-                        .deArrowMark(id, size: 16)
+                        .deArrowMark(id, size: 24)
                         .clipShape(.rect(cornerRadius: Layout.cardRadius, style: .continuous))
+                        .notched(.trailing)
                 }
                 avatar
                     .padding(.trailing, hasCover ? -Layout.rowSpacing / 2 : 0)
@@ -267,7 +267,6 @@ private struct NotificationRow: View {
     private var avatar: some View {
         let onCover = hasCover
         return Avatar(url: item.avatar, size: RowAvatar.size)
-            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: onCover ? 2.5 : 0))
             .overlay(alignment: .topLeading) {
                 if !item.isRead {
                     Circle()

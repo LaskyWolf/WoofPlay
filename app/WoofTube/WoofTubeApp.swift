@@ -45,6 +45,7 @@ struct WoofTubeApp: App {
                 LTEnvelope.selfCheck()
                 GlyphScript.selfCheck()
                 WatchSegments.selfCheck()
+                EndScreenElement.selfCheck()
                 WatchedChannels.selfCheck()
                 YouTubeAPI.selfCheck()
                 SponsorBlock.selfCheck()
@@ -57,6 +58,10 @@ struct WoofTubeApp: App {
                 YouTubeLink.selfCheck()
                 StreamLoader.selfCheck()
                 AppUpdate.selfCheck()
+                Twitch.selfCheck()
+                TwitchAdFilter.selfCheck()
+                LiveChatModel.selfCheck()
+                IRCLine.selfCheck()
                 #endif
             }
             .alert("Session Expired", isPresented: $session.isExpired) {
@@ -108,6 +113,17 @@ extension View {
             }
             .presentationDragIndicator(.visible)
         }
+        .sheet(item: Binding(get: { isActive ? router.hashtagRoute : nil }, set: { router.hashtagRoute = $0 })) { route in
+            NavigationStack {
+                HashtagPage(tag: route.tag)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { router.hashtagRoute = nil }
+                        }
+                    }
+            }
+            .presentationDragIndicator(.visible)
+        }
         .alert("That Didn't Work", isPresented: Binding(get: { isActive && router.actionMessage != nil }, set: { if !$0 { router.actionMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -116,8 +132,21 @@ extension View {
     }
 }
 
-enum AppTab: Hashable {
-    case home, library, subs, search
+enum AppTab: String, Hashable {
+    // The raw values are saved as the start tab, so they keep their old names.
+    case home = "Home", library = "Library", subs = "Subs", search = "Search"
+
+    var title: String {
+        switch self {
+        case .home: "Explore"
+        case .library: "Library"
+        case .subs: "Following"
+        case .search: "Search"
+        }
+    }
+
+    /// The tabs the app can open on.
+    static let startTabs: [AppTab] = [.home, .library, .subs]
 }
 
 /// The pages a tab opens from code.
@@ -143,58 +172,112 @@ struct TabDestinations: ViewModifier {
     }
 }
 
+/// Haptics for things that finish or fail while the person may be looking elsewhere.
+/// The types are spelled out: left to infer them, the compiler gives up on this chain.
+private struct ResultFeedback: ViewModifier {
+    @Environment(Router.self) private var router
+    @ObservedObject private var downloads = DownloadStore.shared
+
+    private var completed: Int { downloads.batch?.completed ?? 0 }
+    private var failed: Int { downloads.batch?.failed ?? 0 }
+    private var hasError: Bool { router.loadError != nil || router.actionMessage != nil }
+
+    private static func grew(_ old: Int, _ new: Int) -> Bool { new > old }
+    private static func appeared(_ old: Bool, _ new: Bool) -> Bool { new }
+
+    func body(content: Content) -> some View {
+        content
+            .sensoryFeedback(SensoryFeedback.success, trigger: completed, condition: Self.grew)
+            .sensoryFeedback(SensoryFeedback.error, trigger: failed, condition: Self.grew)
+            .sensoryFeedback(SensoryFeedback.error, trigger: hasError, condition: Self.appeared)
+    }
+}
+
 struct RootTabs: View {
     @Environment(Router.self) private var router
+    @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
     /// Links the floating card and the video page for the zoom, as Woof Music does for its player.
     @Namespace private var playerZoom
 
     var body: some View {
+        players
+            .routerPresentations(router, isActive: !router.isExpanded)
+            .task { await Subscriptions.shared.load() }
+            .task { await AppUpdate.shared.check() }
+            // Waits here because a link can arrive while the app is still restoring the sign-in.
+            .task(id: router.pendingLink) {
+                guard let link = router.pendingLink else { return }
+                router.pendingLink = nil
+                router.open(link)
+            }
+            .onChange(of: scenePhase) {
+                router.sceneChanged(isBackground: scenePhase == .background)
+                if scenePhase == .active { router.sceneBecameActive() }
+            }
+    }
+
+    /// Split from `body` so each part type-checks on its own: the whole chain at once is too slow for the compiler.
+    private var tabs: some View {
         TabView(selection: Bindable(router).selectedTab) {
-            Tab("Home", systemImage: "house", value: AppTab.home) {
-                HomeView()
-            }
-            Tab("Library", systemImage: "play.square.stack", value: AppTab.library) {
-                LibraryView()
-            }
-            Tab("Subs", systemImage: "rectangle.stack.badge.play", value: AppTab.subs) {
-                SubsView()
+            // Right-to-left puts the first tab on the right, so the left-handed bar lists them
+            // backwards: on screen they stay Home, Library, Subs, with Search moved to the left.
+            if settings.leftHandedTabBar {
+                subsTab
+                libraryTab
+                homeTab
+            } else {
+                homeTab
+                libraryTab
+                subsTab
             }
             Tab(value: AppTab.search, role: .search) {
-                SearchScreen()
+                SearchScreen().environment(\.layoutDirection, .leftToRight)
             }
         }
-        .tabBarMinimizeBehavior(.never)
+        .environment(\.layoutDirection, settings.leftHandedTabBar ? .rightToLeft : .leftToRight)
+        .tabBarMinimizeBehavior(.onScrollDown)
         // Selecting Search activates it, and its X goes back to the previous tab.
         .tabViewSearchActivation(.searchTabSelection)
-        .environment(\.videoZoomSpace, playerZoom)
-        .overlay { PlayerOverlay(zoom: playerZoom) }
-        .fullScreenCover(isPresented: Bindable(router).isExpanded) {
-            WatchPage()
-                .navigationTransition(.zoom(sourceID: router.zoomSource, in: playerZoom))
-                .presentationBackground(.clear)
-                .onAppear { router.isWatchPageOnScreen = true }
-                .onDisappear { router.isWatchPageOnScreen = false }
+        .modifier(ResultFeedback())
+    }
+
+    // Each page is set back to left-to-right; only the tab bar flips.
+    private var homeTab: some TabContent<AppTab> {
+        Tab(AppTab.home.title, systemImage: "safari", value: AppTab.home) {
+            HomeView().environment(\.layoutDirection, .leftToRight)
         }
-        .fullScreenCover(item: Bindable(router).shortsRoute) { route in
-            ShortsView(model: route.model)
-                .navigationTransition(.zoom(sourceID: router.zoomSource, in: playerZoom))
-                .presentationBackground(.clear)
-                .onAppear { router.isShortsPageOnScreen = true }
-                .onDisappear { router.isShortsPageOnScreen = false }
+    }
+
+    private var libraryTab: some TabContent<AppTab> {
+        Tab(AppTab.library.title, systemImage: "play.square.stack", value: AppTab.library) {
+            LibraryView().environment(\.layoutDirection, .leftToRight)
         }
-        .routerPresentations(router, isActive: !router.isExpanded)
-        .task { await Subscriptions.shared.load() }
-        .task { await AppUpdate.shared.check() }
-        // Waits here because a link can arrive while the app is still restoring the sign-in.
-        .task(id: router.pendingLink) {
-            guard let link = router.pendingLink else { return }
-            router.pendingLink = nil
-            router.open(link)
+    }
+
+    private var subsTab: some TabContent<AppTab> {
+        Tab(AppTab.subs.title, systemImage: "rectangle.stack.badge.play", value: AppTab.subs) {
+            SubsView().environment(\.layoutDirection, .leftToRight)
         }
-        .onChange(of: scenePhase) {
-            router.sceneChanged(isBackground: scenePhase == .background)
-            if scenePhase == .active { router.sceneBecameActive() }
-        }
+    }
+
+    private var players: some View {
+        tabs
+            .environment(\.videoZoomSpace, playerZoom)
+            .overlay { PlayerOverlay(zoom: playerZoom) }
+            .fullScreenCover(isPresented: Bindable(router).isExpanded) {
+                WatchPage()
+                    .navigationTransition(.zoom(sourceID: router.zoomSource, in: playerZoom))
+                    .presentationBackground(.clear)
+                    .onAppear { router.isWatchPageOnScreen = true }
+                    .onDisappear { router.isWatchPageOnScreen = false }
+            }
+            .fullScreenCover(item: Bindable(router).shortsRoute) { route in
+                ShortsView(model: route.model)
+                    .navigationTransition(.zoom(sourceID: router.zoomSource, in: playerZoom))
+                    .presentationBackground(.clear)
+                    .onAppear { router.isShortsPageOnScreen = true }
+                    .onDisappear { router.isShortsPageOnScreen = false }
+            }
     }
 }

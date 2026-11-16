@@ -211,6 +211,8 @@ struct WatchPage: View {
         VStack(spacing: 0) {
             video
                 .gesture(PlayerDismissGesture.closing(isEnabled: !isFullscreen, distance: $pullDistance) { router.isExpanded = false })
+                // Over the page below, so the LIVE tag's lower half shows.
+                .zIndex(1)
             if !isFullscreen {
                 ScrollView {
                     WatchDetailsView(showsComments: $showsComments)
@@ -267,6 +269,17 @@ struct WatchPage: View {
                     .frame(maxHeight: .infinity, alignment: .bottom)
                 PlayerControls(player: router.player, sleepTimer: router.sleepTimer, isFullscreen: isFullscreen, fillsScreen: $fillsScreen)
                 SponsorSkipButton()
+                if let stream = router.twitchStream {
+                    TwitchAdBadge(stream: stream)
+                }
+                if router.isLive {
+                    LiveTag(player: router.player)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                        .padding(.leading, Layout.screenPadding)
+                        // Half over the video's lower edge on the page; inside the picture in full screen.
+                        .offset(y: isFullscreen ? -Layout.screenPadding : LiveTag.height / 2)
+                        .allowsHitTesting(false)
+                }
             }
         }
     }
@@ -626,6 +639,7 @@ private struct MiniControls: View {
                             .foregroundStyle(.tint)
                     }
                 }
+                .sensoryFeedback(.impact(weight: .medium), trigger: player.isPaused)
                 .padding(.trailing, Layout.rowPadding)
             }
             .labelStyle(MiniGlyphLabelStyle())
@@ -810,13 +824,8 @@ private struct PlayerProgress: View {
         VStack(spacing: 0) {
             HStack(alignment: .bottom) {
                 HStack(alignment: .bottom) {
-                    if player.isLiveStream {
-                        Text("LIVE")
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, Layout.rowPadding)
-                            .padding(.vertical, 2)
-                            .background(.tint, in: .capsule)
-                    } else {
+                    // A live stream shows its LIVE tag on the video instead, all the time.
+                    if !player.isLiveStream {
                         Text("\(shownTime.clockText) | \(duration.clockText)")
                     }
                     if let chapter {
@@ -906,9 +915,34 @@ private struct PlayerProgress: View {
     }
 }
 
+/// LIVE, in the accent colour, at the same place on every live stream.
+struct LiveTag: View {
+    @ObservedObject var player: MpvPlayer
+    static let height: CGFloat = 24
+    /// Behind by less than this still counts as live: a short stall isn't worth a warning.
+    static let lagTolerance: Double = 5
+
+    private var isBehind: Bool { player.liveDelay >= Self.lagTolerance }
+
+    var body: some View {
+        // Grey and with the time it trails by, like YouTube's own tag once you fall behind.
+        Text(isBehind ? "LIVE −\(player.liveDelay.clockText)" : "LIVE")
+            .font(.caption.weight(.heavy).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, Layout.chipSpacing)
+            .frame(height: Self.height)
+            .background(isBehind ? AnyShapeStyle(Color.black.opacity(0.6)) : AnyShapeStyle(.tint), in: .capsule)
+            .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+            .animation(.easeOut(duration: 0.2), value: isBehind)
+            .accessibilityLabel(isBehind ? "Live, \(Int(player.liveDelay)) seconds behind. Double tap the right side to catch up." : "Live")
+    }
+}
+
 private struct SeekHint {
     let id = UUID()
     let isLeading: Bool
+    /// A live stream jumping to its newest moment.
+    var goesLive = false
     /// Double taps in a row add up.
     let seconds: Int
 }
@@ -986,7 +1020,13 @@ private struct PlayerControls: View {
                     scheduleHide()
                 },
                 onDoubleTap: { isLeading in
-                    guard !player.isLiveStream else { return }
+                    // A live stream can't skip, but the right side catches up with the stream.
+                    if player.isLiveStream {
+                        guard !isLeading, player.liveDelay >= LiveTag.lagTolerance else { return }
+                        player.goLive()
+                        seekHint = SeekHint(isLeading: false, goesLive: true, seconds: 0)
+                        return
+                    }
                     player.skip(by: Double(isLeading ? -Self.skipSeconds : Self.skipSeconds))
                     let previous = seekHint?.isLeading == isLeading ? seekHint?.seconds ?? 0 : 0
                     seekHint = SeekHint(isLeading: isLeading, seconds: previous + Self.skipSeconds)
@@ -1006,13 +1046,19 @@ private struct PlayerControls: View {
             )
             .ignoresSafeArea(edges: isFullscreen ? .all : [])
 
+            // Under the controls, as on YouTube, so the cards never cover a button.
+            if !showsControls && !showsUpNext && !router.endScreen.isEmpty {
+                EndScreenOverlay(clock: player.clock, elements: router.endScreen)
+                    .transition(.opacity)
+            }
             if isStarting || showsSpinner {
                 ProgressView().tint(.white).controlSize(.large).allowsHitTesting(false)
             }
             if showsControls {
                 controls.transition(.opacity)
             }
-            if showsUpNext {
+            // Read with the size class, so it goes in the same frame the player leaves full screen.
+            if showsUpNext && isFullscreen {
                 Color.black.opacity(0.4)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
@@ -1021,13 +1067,16 @@ private struct PlayerControls: View {
                     .padding(.horizontal, Layout.cardSpacing)
                     .padding(.bottom, Layout.rowSpacing)
                     .frame(maxHeight: .infinity, alignment: .bottom)
-                    .transition(reduceMotion ? .opacity : .scale(scale: 0.95, anchor: .bottom).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
             if let seekHint {
                 VStack(spacing: Layout.cardSpacing) {
-                    Image(systemName: seekHint.isLeading ? "gobackward.10" : "goforward.10")
+                    Image(systemName: seekHint.goesLive ? "forward.end.fill" : seekHint.isLeading ? "gobackward.10" : "goforward.10")
                         .font(.system(size: 28, weight: .semibold))
-                    if seekHint.seconds > Self.skipSeconds {
+                    if seekHint.goesLive {
+                        Text("Live")
+                            .font(.subheadline.weight(.bold))
+                    } else if seekHint.seconds > Self.skipSeconds {
                         Text("\(seekHint.isLeading ? "−" : "+")\(seekHint.seconds)")
                             .font(.subheadline.weight(.bold).monospacedDigit())
                     }
@@ -1053,6 +1102,12 @@ private struct PlayerControls: View {
         }
         .sheet(isPresented: $showsWatchTogether) { WatchTogetherSheet() }
         .sensoryFeedback(.selection, trigger: fillsScreen)
+        // Felt on each double tap, since the eyes stay on the video.
+        .sensoryFeedback(.impact(weight: .light), trigger: seekHint?.id) { _, new in new != nil }
+        .sensoryFeedback(.impact(weight: .light), trigger: showsUpNext)
+        .sensoryFeedback(.impact(weight: .light), trigger: isFullscreen)
+        .sensoryFeedback(.selection, trigger: player.speed)
+        .sensoryFeedback(.selection, trigger: router.maxHeight)
         .onChange(of: isFullscreen) { if !isFullscreen { showsUpNext = false } }
         .accessibilityAction(named: "Up Next") { if isFullscreen { setUpNext(true) } }
         .onAppear(perform: scheduleHide)
@@ -1109,6 +1164,7 @@ private struct PlayerControls: View {
                     }
                 }
                 .labelStyle(PlayerGlyphLabelStyle(size: 34))
+                .sensoryFeedback(.impact(weight: .medium), trigger: player.isPaused)
             }
         }
         .padding(.horizontal, Layout.cardSpacing)
@@ -1215,7 +1271,9 @@ private struct PlayerControls: View {
                 }
             }
             .pickerStyle(.menu)
-            if let screen = TVLink.shared.screen {
+            // The TV only plays YouTube.
+            let isTwitch = router.current?.isTwitch == true
+            if let screen = TVLink.shared.screen, !isTwitch {
                 Button("Play on \(screen.name)", systemImage: "tv") { router.playOnTV() }
             }
             Button(sleepTimer.isActive ? "Sleep Timer · On" : "Sleep Timer…", systemImage: sleepTimer.isActive ? "moon.zzz.fill" : "moon.zzz") {
@@ -1341,21 +1399,35 @@ private struct UpNextPanel: View {
     }
 
     private func card(_ video: YouTubeVideo) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let hasAvatar = video.channelAvatarURL != nil
+        let inset = hasAvatar ? CoverNotch.textInset : Layout.chipSpacing
+        return VStack(alignment: .leading, spacing: 0) {
             VideoCover(video: video, maxPixels: 600)
                 .aspectRatio(Layout.videoAspect, contentMode: .fit)
-                .overlay(alignment: .bottomTrailing) { VideoBadge(video: video, extras: VideoExtras(), isCompact: true) }
+                .overlay(alignment: .bottomLeading) {
+                    HStack(alignment: .bottom, spacing: 0) {
+                        CoverTitle(video: video, font: .caption.weight(.semibold), leading: inset)
+                        Spacer(minLength: 0)
+                        if !hasAvatar { StatusBadge(video: video, extras: VideoExtras(), isCompact: true) }
+                        VideoBadge(video: video, extras: VideoExtras(), isCompact: true)
+                    }
+                }
                 .clipShape(.rect(cornerRadius: 14, style: .continuous))
-            VideoTitle(video: video)
-                .font(.subheadline.weight(.semibold))
-                // Two lines always, so every card in the row has the same height.
-                .lineLimit(2, reservesSpace: true)
-                .multilineTextAlignment(.leading)
-                .padding(.top, 5)
+                .notched(isOn: hasAvatar)
+                .notchAvatar {
+                    if hasAvatar {
+                        Avatar(url: video.channelAvatarURL, size: CoverNotch.size)
+                            .statusRing(VideoStatus(video: video, extras: VideoExtras()))
+                    }
+                }
             Text(video.channelTitle ?? "")
-                .font(.caption)
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                // The picture's lower half reaches below the cover, so every card keeps room for it.
+                .frame(minHeight: CoverNotch.radius, alignment: .top)
+                .padding(.leading, inset)
+                .padding(.top, Layout.cardSpacing)
         }
         .frame(width: Self.cardWidth)
     }
@@ -1372,7 +1444,7 @@ private struct RoutePicker: UIViewRepresentable {
     func updateUIView(_ view: AVRoutePickerView, context: Context) {}
 }
 
-private struct PlaybackFailure: View {
+struct PlaybackFailure: View {
     @ObservedObject var player: MpvPlayer
     @Environment(Router.self) private var router
 
@@ -1424,6 +1496,9 @@ private struct WatchDetailsView: View {
     @ObservedObject private var downloads = DownloadStore.shared
     @State private var showsDescription = false
     @State private var showsPlaylists = false
+    @ObservedObject private var twitchLive = TwitchLive.shared
+    /// Started with the video, so the chat is already full when it opens.
+    @StateObject private var chat = LiveChatModel()
     @State private var showsChat = false
     @State private var confirmsDeleteDownload = false
     @State private var likeTaps = 0
@@ -1433,32 +1508,23 @@ private struct WatchDetailsView: View {
     @State private var finishedDownloads = 0
 
     var body: some View {
+        if let video = router.current, video.twitchLogin != nil {
+            TwitchWatchDetails(video: video)
+        } else if let video = router.current, video.isTwitch {
+            TwitchMediaDetails(video: video)
+        } else {
+            youTubeDetails
+        }
+    }
+
+    private var youTubeDetails: some View {
         VStack(alignment: .leading, spacing: Layout.sectionSpacing) {
             infoHeader
             PlaybackFailure(player: router.player)
             if let details = router.details {
                 descriptionCard(details)
                 if router.isLive, router.liveChatToken != nil {
-                    Button { showsChat = true } label: {
-                        HStack {
-                            Label {
-                                Text("Live Chat")
-                            } icon: {
-                                Image(systemName: "bubble.left.and.bubble.right")
-                                    .glyphMotion(showsChat ? .bubblePop : nil, trigger: showsChat)
-                            }
-                                .font(.subheadline.weight(.semibold))
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(Layout.rowSpacing)
-                        .frame(minHeight: 44)
-                        .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: Layout.tileRadius))
-                        .contentShape(.rect)
-                    }
-                    .buttonStyle(ZoomPressStyle(scale: 0.98))
+                    LiveChatButton(showsChat: $showsChat)
                 }
                 if details.commentsToken != nil {
                     CommentsCard(details: details) { showsComments = true }
@@ -1477,20 +1543,18 @@ private struct WatchDetailsView: View {
                     Text("Up Next")
                         .font(.title3.bold())
                         .padding(.top, Layout.chipSpacing)
-                    // Lazy, so each card asks for its like counts only when it comes into view.
-                    LazyVStack(spacing: Layout.rowSpacing * 2) {
-                        ForEach(details.related, id: \.videoId) { video in
-                            VideoButton(video: video)
-                        }
-                    }
+                    UpNextList(videos: details.related, streams: twitchLive.channels + twitchLive.suggested)
                 }
             }
         }
         .padding(Layout.screenPadding)
         .sheet(isPresented: $showsChat) {
-            if let token = router.liveChatToken {
-                LiveChatSheet(token: token)
-            }
+            LiveChatSheet(model: chat)
+        }
+        .task(id: router.liveChatToken) {
+            guard let token = router.liveChatToken else { return }
+            chat.reset()
+            await chat.run(.youTube(token: token))
         }
         .sheet(isPresented: $showsPlaylists) {
             if let video = router.current {
@@ -1567,10 +1631,10 @@ private struct WatchDetailsView: View {
                                 Button("Open Channel", systemImage: "person.crop.circle") {
                                     router.openChannelPage(creator.channelId)
                                 }
-                                Button("Subscribe", systemImage: "person.badge.plus") {
+                                Button("Follow", systemImage: "person.badge.plus") {
                                     router.run { _ = try await InnerTubeClient.wooftube.subscribe(channelId: creator.channelId) }
                                 }
-                                Button("Unsubscribe", systemImage: "person.badge.minus") {
+                                Button("Unfollow", systemImage: "person.badge.minus") {
                                     router.run { _ = try await InnerTubeClient.wooftube.unsubscribe(channelId: creator.channelId) }
                                 }
                             } label: {
@@ -1839,7 +1903,7 @@ struct CommentsCard: View {
                 if let comment = details?.topComment {
                     HStack(alignment: .top, spacing: Layout.chipSpacing) {
                         Avatar(url: comment.avatar, size: Layout.avatarSmall)
-                        Text(comment.text)
+                        Text(comment.plainText)
                             .font(.footnote)
                             .lineLimit(commentLines)
                             .multilineTextAlignment(.leading)
@@ -1917,12 +1981,11 @@ extension View {
     }
 }
 
-struct SubscribeButton: View {
-    let channelId: String
-    let isSubscribed: Bool
-    /// Spelled out with an icon and as wide as it can be, for the channel page's header.
+/// Follow for YouTube and Twitch alike: accent-tinted until you follow, then plain.
+struct FollowButton: View {
+    let isFollowing: Bool
     var isLarge = false
-    let onChange: (Bool) -> Void
+    let action: () -> Void
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var taps = 0
@@ -1930,34 +1993,47 @@ struct SubscribeButton: View {
     var body: some View {
         Button {
             taps += 1
-            toggle()
+            action()
         } label: {
             if isLarge {
-                Label(isSubscribed ? "Subscribed" : "Subscribe", systemImage: isSubscribed ? "person.fill.checkmark" : "person.badge.plus")
+                Label(isFollowing ? "Following" : "Follow", systemImage: isFollowing ? "person.fill.checkmark" : "person.badge.plus")
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                    .foregroundStyle(isSubscribed ? Color.primary : Color.white)
+                    .foregroundStyle(isFollowing ? Color.primary : Color.white)
                     .contentTransition(.symbolEffect(.replace))
                     .frame(maxWidth: .infinity)
                     .frame(height: 44)
-                    .glassEffect(Glass.regular.tint(isSubscribed ? nil : settings.accentColor).interactive(), in: .capsule)
+                    .glassEffect(Glass.regular.tint(isFollowing ? nil : settings.accentColor).interactive(), in: .capsule)
                     .contentShape(.capsule)
             } else {
-                Text(isSubscribed ? "Subscribed" : "Subscribe")
+                Text(isFollowing ? "Following" : "Follow")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(isSubscribed ? Color.primary : Color.white)
+                    .foregroundStyle(isFollowing ? Color.primary : Color.white)
                     .contentTransition(.interpolate)
                     .padding(.horizontal, Layout.screenPadding)
                     .frame(height: 38)
-                    .glassEffect(Glass.regular.tint(isSubscribed ? nil : settings.accentColor).interactive(), in: .capsule)
+                    .glassEffect(Glass.regular.tint(isFollowing ? nil : settings.accentColor).interactive(), in: .capsule)
                     .contentShape(.capsule)
             }
         }
         .buttonStyle(GlassPressStyle())
-        .glyphMotion(isSubscribed ? .subscribed : .unsubscribed, trigger: taps)
-        .animation(reduceMotion ? nil : .snappy, value: isSubscribed)
-        .accessibilityLabel(isSubscribed ? "Unsubscribe" : "Subscribe")
-        .sensoryFeedback(.selection, trigger: isSubscribed)
+        .glyphMotion(isFollowing ? .subscribed : .unsubscribed, trigger: taps)
+        .animation(reduceMotion ? nil : .snappy, value: isFollowing)
+        .accessibilityLabel(isFollowing ? "Unfollow" : "Follow")
+        .sensoryFeedback(.selection, trigger: isFollowing)
+    }
+}
+
+/// YouTube's follow: the shared button, which tells YouTube straight away.
+struct SubscribeButton: View {
+    let channelId: String
+    let isSubscribed: Bool
+    /// Spelled out with an icon and as wide as it can be, for the channel page's header.
+    var isLarge = false
+    let onChange: (Bool) -> Void
+
+    var body: some View {
+        FollowButton(isFollowing: isSubscribed, isLarge: isLarge, action: toggle)
     }
 
     private func toggle() {
@@ -2053,10 +2129,12 @@ struct ChannelView: View {
     @State private var featured: YouTubeVideo?
     @State private var isFeaturedPinned = false
     @State private var avatar: String?
+    @State private var twitchStream: TwitchChannel?
     @State private var isSearching = false
     @Namespace private var searchMorph
 
-    private static let shownTabs: Set<String> = ["videos", "playlists", "posts", "community"]
+    /// "streams" is the Live tab. Podcasts and Releases list playlists.
+    private static let shownTabs: Set<String> = ["videos", "shorts", "streams", "podcasts", "releases", "playlists", "posts", "community"]
     private var tabs: [YouTubeChannelTab] {
         page?.tabs.filter { tab in
             tab.browseId != nil && Self.tabName(tab).map { Self.shownTabs.contains($0) } == true
@@ -2106,7 +2184,13 @@ struct ChannelView: View {
                 } else {
                     header(topInset: topInset)
                 }
-                if let featured {
+                // A stream on Twitch takes the featured card; the latest video then stays in the list.
+                if let live = twitchStream {
+                    SectionTitle(title: "Live on Twitch")
+                    TwitchStreamRow(channel: live)
+                        .padding(.horizontal, Layout.screenPadding)
+                        .padding(.bottom, Layout.rowPadding)
+                } else if let featured {
                     SectionTitle(title: isFeaturedPinned ? "Pinned Video" : "Latest Video")
                     VideoButton(video: featured)
                         .padding(.horizontal, Layout.screenPadding)
@@ -2116,9 +2200,9 @@ struct ChannelView: View {
                     FilterChips(titles: tabs.map(\.title), selected: selectedTab, onTap: select)
                 }
                 if model.items.isEmpty, model.isLoading || isLoading {
-                    LoadingRows(kind: .compact)
+                    LoadingRows(kind: .compact, shortsGrid: isShortsTab)
                 }
-                FeedRows(model: model, isCompact: true)
+                FeedRows(model: model, isCompact: true, shortsGrid: isShortsTab)
                 if let description = page?.channel?.description, !description.isEmpty {
                     SectionTitle(title: "About")
                     Text(description)
@@ -2192,6 +2276,10 @@ struct ChannelView: View {
         }
     }
 
+    private var isShortsTab: Bool {
+        tabs.first { $0.title == selectedTab }.flatMap(Self.tabName) == "shorts"
+    }
+
     private func select(_ title: String) {
         guard let tab = tabs.first(where: { $0.title == title }) else { return }
         Task { await show(tab) }
@@ -2202,11 +2290,15 @@ struct ChannelView: View {
         guard let id = tab.browseId else { return }
         selectedTab = tab.title
         await model.load(.browse(id, params: tab.params), keepChips: true)
+        placeFeatured()
+    }
+
+    private func placeFeatured() {
         if featured == nil, var latest = model.rowVideos.first {
             latest.channelAvatarURL = nil
             featured = latest
         }
-        if let featuredId = featured?.videoId, let item = model.items.first(where: { $0.id == featuredId }) {
+        if twitchStream == nil, let featuredId = featured?.videoId, let item = model.items.first(where: { $0.id == featuredId }) {
             model.remove(item)
         }
     }
@@ -2217,6 +2309,10 @@ struct ChannelView: View {
         guard page == nil, let json = try? await InnerTubeClient.wooftube.browse(browseId: channelId) else { return }
         page = await offMain { YouTubeChannelParser.channelPage(in: json) }
         avatar = Self.avatarURL(in: json)
+        let pageText = await offMain { (try? JSONSerialization.data(withJSONObject: json)).map { String(decoding: $0, as: UTF8.self) } ?? "" }
+        let channel = page?.channel
+        // Asked alongside the videos, and answered before the latest video leaves the list.
+        async let stream = Twitch.liveStream(ofYouTubeChannel: channelId, handle: channel?.handle, title: channel?.title, pageText: pageText)
         let (subscribed, trailer) = await offMain {
             (JSON.first("subscribed", in: json) as? Bool == true, JSON.first("channelVideoPlayerRenderer", in: json) as? [String: Any])
         }
@@ -2232,8 +2328,39 @@ struct ChannelView: View {
             )
             isFeaturedPinned = true
         }
-        if let tab = tabs.first(where: { Self.tabName($0) == "videos" }) ?? tabs.first {
-            await show(tab)
+        if let tab = tabs.first(where: { Self.tabName($0) == "videos" }) ?? tabs.first, let id = tab.browseId {
+            selectedTab = tab.title
+            await model.load(.browse(id, params: tab.params), keepChips: true)
         }
+        twitchStream = await stream
+        placeFeatured()
+    }
+}
+
+/// The row that opens a live chat, for YouTube and Twitch alike.
+struct LiveChatButton: View {
+    @Binding var showsChat: Bool
+
+    var body: some View {
+        Button { showsChat = true } label: {
+            HStack {
+                Label {
+                    Text("Live Chat")
+                } icon: {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .glyphMotion(showsChat ? .bubblePop : nil, trigger: showsChat)
+                }
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(Layout.rowSpacing)
+            .frame(minHeight: 44)
+            .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: Layout.tileRadius))
+            .contentShape(.rect)
+        }
+        .buttonStyle(ZoomPressStyle(scale: 0.98))
     }
 }

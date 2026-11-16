@@ -10,9 +10,9 @@
 **A free, open source YouTube client for iPhone, written from scratch in SwiftUI.**
 It contains no YouTube code and shows no ads.
 
-<img src=".github/assets/home.png" width="31%" alt="Home" />&nbsp;
+<img src=".github/assets/home.png" width="31%" alt="Explore" />&nbsp;
 <img src=".github/assets/player.png" width="31%" alt="Video page" />&nbsp;
-<img src=".github/assets/subs.png" width="31%" alt="Subs with New Videos" />
+<img src=".github/assets/subs.png" width="31%" alt="Following with New Videos" />
 
 <sub>The app's screens, with video content replaced by placeholders.</sub>
 
@@ -30,25 +30,30 @@ It contains no YouTube code and shows no ads.
 
 ## Features
 
-### Home and Subs
-- Your own Home feed, with filter chips and videos you have already seen moved out of the way
-- Keep Watching card to resume where you stopped
+### Explore and Following
+- Your own Explore feed, with filter chips and videos you have already seen moved out of the way
+- Jump Back In card: the latest unfinished video and the followed Twitch channels that are live
 - Filters stay at the top while you scroll, over a fade
-- New Videos row on Subs: today's uploads as cards in the colour of their cover, with Watch Later and Play buttons
+- New Videos row on Following: today's uploads as cards in the colour of their cover, with Watch Later and Play buttons
 - Shorts shelves (a two-column grid when a Shorts filter is on), community posts with polls, and playlists in the feed
+- LIVE, New and UPCOMING marks under the channel picture, and Like and Dislike buttons under each card
 - Long-press menus on videos: Watch Later, playlists, share, download and feedback
 
 ### Twitch
 - Live streams, clips and past broadcasts in the same player as YouTube, without ads
 - Live chat shared with YouTube's, including Super Chats, Bits, subs and raids
-- Sign in with a device code. Followed live channels appear on Home as Jump Back In
+- Sign in with a device code and your own Twitch Client ID. Followed live channels appear in Jump Back In
 - Twitch results in search and Up Next, a Streams filter, and creator pages
-- Not verified on a device yet. See [ROADMAP.md](app/ROADMAP.md)
+- One Follow button for YouTube and Twitch channels
+- Removing Twitch's ads breaks Twitch's Terms of Service
 
 ### Player
 - mpv engine with up to the quality you choose
 - Playback speed, captions, audio tracks, chapters and thumbnail previews while seeking
-- Live streams with live chat
+- Live streams with live chat, and a double tap on the right to catch up when the stream trails
+- Stable Volume evens out loud and quiet parts
+- End screen cards over the last seconds of a video
+- Haptics on seeks, skips, Play and Pause, speed and quality changes, and results
 - Lock screen and Control Center controls, and AirPlay audio
 - Miniplayer that floats above the tabs, with light from the video behind it and a progress line on its edge. Drag it to the bottom of the screen to close it
 - Watch Together: watch the same video in sync with friends in a room, from the ••• menu
@@ -56,9 +61,10 @@ It contains no YouTube code and shows no ads.
 - Reads less ahead on cellular and hotspots (30 seconds or 50 MB) than on Wi-Fi (2 minutes or 200 MB)
 
 ### Video page
-- Likes, dislike estimates, subscribe, Watch Later, playlists and share
-- Comments and replies, with likes. A time in a comment or description plays from there
-- Up Next, channel pages and search inside a channel
+- Likes, dislike estimates, Follow, Watch Later, playlists and share
+- Comments and replies, sorted by Top or Newest, with likes and dislikes. Edit, delete or report a comment from its menu
+- A time in a comment or description plays from there
+- Up Next, channel pages with Shorts, Live, Podcasts and Releases tabs, and search inside a channel
 
 ### Shorts
 - Vertical swipe through YouTube's own Shorts sequence
@@ -84,12 +90,13 @@ It contains no YouTube code and shows no ads.
 - Light, dark or system appearance
 - Icons with their own animation that follow the real state: the speed needle, the download ring, the sleep timer countdown
 - Pages open by growing out of what you tapped
+- Settings for the Library layout, the start tab and a left-handed tab bar
 - Three cover sizes for videos and two for Shorts, the same across the app
 
 ## Speed
 
 - Feeds are parsed away from the main thread, so scrolling doesn't stall while a page loads.
-- Home opens on the last saved page while the new one arrives.
+- Explore opens on the last saved page while the new one arrives.
 - Images are decoded at the size they are shown and held in a memory-limited cache.
 - A stream address is reused for 30 minutes, so reopening a video starts at once.
 
@@ -129,7 +136,7 @@ Google can challenge or restrict an account used in an unofficial app, and posti
 
 ## Project status
 
-Version 1.6. Each feature still needs testing on more devices. [ROADMAP.md](app/ROADMAP.md) lists what is verified and what is missing.
+Version 1.6. Each feature still needs testing on more devices.
 
 ## Credits
 

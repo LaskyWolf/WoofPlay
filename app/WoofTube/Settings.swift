@@ -49,15 +49,41 @@ enum ThemeMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Library's playlists, as rows or as covers in two columns, as in Woof Music.
+enum LibraryLayout: String, CaseIterable, Identifiable {
+    case list = "List", grid = "Grid"
+    var id: Self { self }
+    var symbol: String { self == .list ? "list.bullet" : "square.grid.2x2" }
+}
+
 final class AppSettings: ObservableObject {
     private static let accentKey = "settings.accentName"
     private static let themeKey = "settings.themeMode"
+    private static let libraryLayoutKey = "settings.libraryLayout"
+    private static let startTabKey = "settings.startTab"
+    private static let leftHandedKey = "settings.leftHandedTabBar"
 
     @Published var accentName: String {
         didSet { UserDefaults.standard.set(accentName, forKey: Self.accentKey) }
     }
     @Published var themeMode: ThemeMode {
         didSet { UserDefaults.standard.set(themeMode.rawValue, forKey: Self.themeKey) }
+    }
+
+    @Published var libraryLayout: LibraryLayout {
+        didSet { UserDefaults.standard.set(libraryLayout.rawValue, forKey: Self.libraryLayoutKey) }
+    }
+    @Published var startTab: AppTab {
+        didSet { UserDefaults.standard.set(startTab.rawValue, forKey: Self.startTabKey) }
+    }
+    /// Search on the left of the tab bar, nearer a left thumb.
+    @Published var leftHandedTabBar: Bool {
+        didSet { UserDefaults.standard.set(leftHandedTabBar, forKey: Self.leftHandedKey) }
+    }
+
+    /// Read before the settings object exists, for the tab the app opens on.
+    static var savedStartTab: AppTab {
+        UserDefaults.standard.string(forKey: startTabKey).flatMap(AppTab.init(rawValue:)) ?? .home
     }
 
     var accentColor: Color {
@@ -68,6 +94,9 @@ final class AppSettings: ObservableObject {
         let defaults = UserDefaults.standard
         accentName = defaults.string(forKey: Self.accentKey) ?? AccentPreset.all[0].name
         themeMode = ThemeMode(rawValue: defaults.string(forKey: Self.themeKey) ?? "") ?? .system
+        libraryLayout = LibraryLayout(rawValue: defaults.string(forKey: Self.libraryLayoutKey) ?? "") ?? .list
+        startTab = Self.savedStartTab
+        leftHandedTabBar = defaults.bool(forKey: Self.leftHandedKey)
     }
 }
 
@@ -140,17 +169,30 @@ private struct ProfileView: View {
     @EnvironmentObject private var session: Session
     @Environment(Router.self) private var router
     @State private var confirmsSignOut = false
-    @State private var isAddingAccount = false
+    @State private var choosesPlatform = false
+    @State private var adding: AccountPlatform?
     @ObservedObject private var downloads = DownloadStore.shared
-
-    private static let notificationSettings = URL(string: "https://www.youtube.com/account_notifications")!
-    private static let accountSettings = URL(string: "https://myaccount.google.com")!
+    @ObservedObject private var twitch = TwitchAccount.shared
+    @State private var twitchAvatar: String?
+    @State private var isEditingPicture = false
 
     var body: some View {
         List {
             Section {
                 VStack(spacing: 10) {
-                    Avatar(url: session.account?.thumbnailUrl, size: 96)
+                    Button {
+                        isEditingPicture = true
+                    } label: {
+                        Avatar(url: session.account?.thumbnailUrl, size: 96).overlay(alignment: .bottomTrailing) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 32, height: 32)
+                                .glassEffect(.regular, in: .circle)
+                        }
+                    }
+                    .buttonStyle(ZoomPressStyle())
+                    .accessibilityLabel("Change Profile Picture")
                     Text(session.account?.name ?? "YouTube").font(.title2.bold())
                     if let handle = session.account?.channelHandle {
                         Text(handle).font(.subheadline).foregroundStyle(.secondary)
@@ -183,7 +225,26 @@ private struct ProfileView: View {
                     }
                     .accessibilityAddTraits(saved.id == session.currentAccountId ? .isSelected : [])
                 }
-                Button("Add Account", systemImage: "person.badge.plus") { isAddingAccount = true }
+                // Shown only: Twitch holds one account, and Sign Out below removes it.
+                if twitch.isSignedIn {
+                    HStack(spacing: Layout.rowSpacing) {
+                        Avatar(url: twitchAvatar, size: 32)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(twitch.login ?? "Signed In").lineLimit(1)
+                            Text(AccountPlatform.twitch.rawValue).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                Button("Add Account", systemImage: "person.badge.plus") { choosesPlatform = true }
+                    .confirmationDialog("Add an account from", isPresented: $choosesPlatform, titleVisibility: .visible) {
+                        ForEach(AccountPlatform.allCases) { platform in
+                            // Twitch holds one account at a time.
+                            if platform != .twitch || !twitch.isSignedIn {
+                                Button(platform.rawValue) { adding = platform }
+                            }
+                        }
+                    }
             } header: {
                 Text("Accounts")
             } footer: {
@@ -225,26 +286,58 @@ private struct ProfileView: View {
             } footer: {
                 Text("Compares this version with the newest release on GitHub.")
             }
-            Section {
-                Link(destination: Self.notificationSettings) {
-                    Label("Notification Settings", systemImage: "bell.badge")
-                }
-                Link(destination: Self.accountSettings) {
-                    Label("Google Account", systemImage: "person.crop.circle")
-                }
-            }
         }
         .listSectionSpacing(.compact)
         .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $isAddingAccount) {
-            AddAccountSheet()
+        .sheet(item: $adding) { platform in
+            switch platform {
+            case .youTube: AddAccountSheet()
+            case .twitch: TwitchSignInView()
+            }
         }
-        .confirmationDialog("Sign out of this account?", isPresented: $confirmsSignOut, titleVisibility: .visible) {
-            Button("Sign Out", role: .destructive) {
+        .task(id: twitch.login) {
+            await twitch.restore()
+            if let login = twitch.login { twitchAvatar = await Twitch.avatars([login])[login] }
+        }
+        .sheet(isPresented: $isEditingPicture, onDismiss: { Task { await session.loadAccount() } }) {
+            NavigationStack {
+                ProfilePictureWebView()
+                    .ignoresSafeArea(edges: .bottom)
+                    .navigationTitle("YouTube Studio")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { isEditingPicture = false }
+                        }
+                    }
+            }
+        }
+        .confirmationDialog("Which account do you want to sign out of?", isPresented: $confirmsSignOut, titleVisibility: .visible) {
+            Button("\(session.account?.name ?? "YouTube") · YouTube", role: .destructive) {
                 router.close()
                 Task { await session.signOut() }
             }
+            if twitch.isSignedIn {
+                Button("\(twitch.login ?? "Twitch") · Twitch", role: .destructive) {
+                    twitch.signOut()
+                    TwitchLive.shared.clear()
+                }
+            }
+        }
+    }
+}
+
+/// The services an account can be added for. Another one is a case here and a sheet in `ProfileView`.
+enum AccountPlatform: String, CaseIterable, Identifiable {
+    case youTube = "YouTube"
+    case twitch = "Twitch"
+
+    var id: Self { self }
+    var systemImage: String {
+        switch self {
+        case .youTube: "play.rectangle.fill"
+        case .twitch: "dot.radiowaves.left.and.right"
         }
     }
 }
@@ -271,8 +364,9 @@ private struct PlayerSettingsView: View {
                     }
                 }
                 Toggle("Picture in Picture", systemImage: "pip", isOn: Bindable(router).allowsPictureInPicture)
+                Toggle("Stable Volume", systemImage: "speaker.wave.2", isOn: Bindable(router).stableVolume)
             } footer: {
-                Text("Autoplay starts the first Up Next video when one ends. Picture in Picture keeps the video in a small window when you leave the app.")
+                Text("Autoplay starts the first Up Next video when one ends. Picture in Picture keeps the video in a small window when you leave the app. Stable Volume evens out loud and quiet parts, so you don't have to keep changing the volume.")
             }
         }
         .navigationTitle("Player")
@@ -302,6 +396,13 @@ private struct IntegrationsSettingsView: View {
                         }
                     }
                 }
+                NavigationLink(destination: WatchTogetherView()) {
+                    Label {
+                        Text("Watch Together")
+                    } icon: {
+                        Image(systemName: "person.2.wave.2").foregroundStyle(.tint)
+                    }
+                }
             }
             Section {
                 Toggle("Community Titles", systemImage: "text.badge.checkmark", isOn: $usesDeArrow)
@@ -320,15 +421,6 @@ private struct IntegrationsSettingsView: View {
                 Text("YouTube hides these numbers. They are estimates from Return YouTube Dislike, which receives the ID of each video you open or see in a feed.")
             }
             TVLinkSection()
-            Section {
-                NavigationLink(destination: WatchTogetherView()) {
-                    Label {
-                        Text("Watch Together")
-                    } icon: {
-                        Image(systemName: "person.2.wave.2").foregroundStyle(.tint)
-                    }
-                }
-            }
         }
         .navigationTitle("Integrations")
         .navigationBarTitleDisplayMode(.inline)
@@ -417,6 +509,29 @@ private struct AppearanceSettingsView: View {
                 Text("Accent Color")
             } footer: {
                 Text("Applies to buttons, highlights, selected items, and the app icon.")
+            }
+
+            Section("Library") {
+                Picker(selection: $settings.libraryLayout) {
+                    ForEach(LibraryLayout.allCases) { Text($0.rawValue).tag($0) }
+                } label: {
+                    Label("Library Layout", systemImage: settings.libraryLayout.symbol)
+                }
+            }
+
+            Section {
+                Picker(selection: $settings.startTab) {
+                    ForEach(AppTab.startTabs, id: \.self) { Text($0.title).tag($0) }
+                } label: {
+                    Label("Start On", systemImage: "rectangle.portrait.on.rectangle.portrait")
+                }
+                Toggle(isOn: $settings.leftHandedTabBar) {
+                    Label("Left-Handed Tab Bar", systemImage: "hand.point.left")
+                }
+            } header: {
+                Text("General")
+            } footer: {
+                Text("Start On is the tab the app opens on. Left-Handed puts Search on the left, nearer your thumb; Home, Library and Subs keep their order.")
             }
         }
         .id(settings.accentName)

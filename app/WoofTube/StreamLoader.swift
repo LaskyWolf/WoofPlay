@@ -167,11 +167,20 @@ enum StreamLoader {
     )
     /// In SwiftyTube's list the other direct clients are refused, or their addresses stop working
     /// partway through a video. The older visionOS stays in case an account is treated differently.
-    private static let directClients: [YouTubeClient] = [visionOS, .visionOS, .iOS]
-    private static let fallbackChain = directClients.map { FallbackClient(client: $0, skipValidation: $0 == .iOS) }
+    /// The TV client goes last: it sends the signed-in account, so YouTube doesn't ask it to prove it isn't a bot.
+    private static let directClients: [YouTubeClient] = [visionOS, .visionOS, .iOS, .tvHtml5]
+    /// Without the TV client: this path keeps only its audio, since the TV's video addresses come encrypted.
+    private static let fallbackChain = ([visionOS, .visionOS, .iOS] as [YouTubeClient]).map { FallbackClient(client: $0, skipValidation: $0 == .iOS) }
         + [FallbackClient(client: .web, skipValidation: true)]
 
     private static let cache = StreamCache()
+
+    /// The TV client's addresses come encrypted, and stop loading without its token.
+    private static func address(of format: Format, token: PoTokenResult?, providers: StreamResolveProviders) async throws -> String {
+        let url = try await StreamFallback.resolveFormatURL(format, providers: providers)
+        guard let pot = token?.streamingDataPoToken.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { return url }
+        return url + "&pot=" + pot
+    }
 
     /// The same address again when it's fresh, and the same request when one is already on its way.
     static func load(videoId: String, maxHeight: Int) async throws -> LoadedStream {
@@ -202,10 +211,11 @@ enum StreamLoader {
         for client in directClients {
             do {
                 let timestamp = client.useSignatureTimestamp ? await providers.signatureTimestamp?() : nil
+                let token = client.useWebPoTokens ? await providers.poTokenProvider?(videoId) : nil
                 let response: PlayerResponse = try await tube.playerResponse(
                     videoId: videoId,
                     client: client,
-                    options: PlayerRequestOptions(signatureTimestamp: timestamp)
+                    options: PlayerRequestOptions(signatureTimestamp: timestamp, poToken: token?.playerRequestPoToken)
                 )
                 guard response.isPlayable, let data = response.streamingData else {
                     let status = response.playabilityStatus
@@ -227,9 +237,9 @@ enum StreamLoader {
                 let formats = ((data.formats ?? []) + (data.adaptiveFormats ?? []))
                     .filter { min($0.width ?? 0, $0.height ?? 0) <= maxHeight }
                 if let video = FormatSelector.bestVideoOnlyFormat(from: hardwareDecoded(in: formats, codec: \.codec)),
-                   let videoURL = video.url,
+                   let videoURL = try? await address(of: video, token: token, providers: providers),
                    let audio = FormatSelector.bestAudioFormat(from: originalAudio(in: formats, url: \.url), preference: .high),
-                   let audioURL = audio.url {
+                   let audioURL = try? await address(of: audio, token: token, providers: providers) {
                     let duration = response.videoDetails?.lengthSeconds.flatMap(Int.init)
                     return LoadedStream(
                         url: StreamFallback.combineVideoAndAudio(videoURL: videoURL, audioURL: audioURL, duration: duration),

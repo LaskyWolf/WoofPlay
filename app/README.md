@@ -2,8 +2,6 @@
 
 A SwiftUI YouTube client.
 
-See [ROADMAP.md](ROADMAP.md) for what exists and what is missing.
-
 ## Build
 
 Building needs Xcode 26. Linux users can use the `Native app` GitHub Actions workflow, which produces an unsigned IPA that lasts one day.
@@ -20,6 +18,12 @@ open WoofTube.xcodeproj
 ## Account risk
 
 Google can challenge or restrict an account used in an unofficial app, and posting comments is more visible than watching. Test with a second account.
+
+## Twitch
+
+WoofTube plays Twitch live channels and takes Twitch's ads out of the stream. This breaks Twitch's Terms of Service.
+
+Signing in needs your own Twitch app: register one at [dev.twitch.tv/console](https://dev.twitch.tv/console) with the **Public** client type and paste its Client ID in the sign-in sheet.
 
 ## License
 

@@ -11,7 +11,7 @@ options:
 packages:
   SwiftyTube:
     url: https://github.com/686udjie/SwiftyTube.git
-    exactVersion: 0.0.6
+    exactVersion: 0.0.9
   # This fork adds mpv's video output for Apple's sample buffer layer, which Picture in Picture needs.
   MPVKit:
     url: https://github.com/streamyfin/MPVKit.git
@@ -19,8 +19,8 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.5"
-    CURRENT_PROJECT_VERSION: "13"
+    MARKETING_VERSION: "1.6"
+    CURRENT_PROJECT_VERSION: "24"
     TARGETED_DEVICE_FAMILY: "1"
 targets:
   WoofTube:

@@ -97,7 +97,11 @@ struct VideoMenuItems: View {
 
         Section {
             Button("Save to Watch Later", systemImage: "clock") {
-                router.run { try await PlaylistActions.add(video.videoId, to: YouTubeFeeds.watchLaterPlaylistId) }
+                router.run {
+                    try await PlaylistActions.add(video.videoId, to: YouTubeFeeds.watchLaterPlaylistId)
+                    // The menu is gone by now, so there is no view to carry the feedback.
+                    await MainActor.run { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+                }
             }
             if let item = DownloadStore.shared.items.first(where: { $0.id == video.videoId }) {
                 Button("Delete Download", systemImage: "trash", role: .destructive) {

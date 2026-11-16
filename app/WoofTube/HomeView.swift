@@ -7,6 +7,8 @@ enum FeedSource: Hashable {
     /// A search inside one page, such as a channel or the watch history.
     case scoped(browseId: String, params: String? = nil, query: String)
     case continuation(String)
+    /// A /hashtag page. YouTube says which browse page it is.
+    case hashtag(String)
 
     func fetch() async throws -> [String: Any] {
         let tube = InnerTubeClient.wooftube
@@ -21,6 +23,12 @@ enum FeedSource: Hashable {
             return try await YouTubeAPI.post("browse", body: body)
         case .continuation(let token):
             return try await tube.browse(continuation: token)
+        case .hashtag(let tag):
+            let page = try await YouTubeAPI.resolve("/hashtag/" + tag)
+            guard let id = JSON.string("browseId", in: page) else {
+                throw YouTubeAPIError(errorDescription: "YouTube can't find this hashtag.")
+            }
+            return try await tube.browse(browseId: id, params: JSON.string("params", in: page))
         }
     }
 }
@@ -507,17 +515,32 @@ struct HomeView: View {
     @State private var history = FeedModel()
     @State private var wasInBackground = false
     @State private var selectedChip: String?
+    @ObservedObject private var twitchLive = TwitchLive.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
-            FeedContent(model: model, retry: { await reload() }, loading: .home) {
-                KeepWatchingCard(history: history)
+            // The followed Twitch channels that are live, one after every five rows of YouTube's suggestions.
+            FeedContent(
+                model: model, retry: { await reload() }, keeps: showsStreams ? Self.isLive : nil, loading: .home,
+                hidesEmptyState: showsStreams && !twitchStreams.isEmpty,
+                mixedIn: selectedChip == nil ? twitchStreams : []
+            ) {
+                if showsStreams {
+                    // ponytail: Twitch first, then YouTube's live videos; YouTube's viewer counts are text, so the two aren't sorted together.
+                    ForEach(twitchStreams) { channel in
+                        TwitchStreamRow(channel: channel)
+                            .padding(.horizontal, Layout.screenPadding)
+                            .padding(.vertical, Layout.rowSpacing)
+                    }
+                } else {
+                    JumpBackInCard(history: history)
+                }
             }
-            .tabRoot(title: "Home", tab: .home) {
-                if !model.chips.isEmpty {
-                    FilterChips(titles: model.chips.map(\.title), selected: selectedChip, onTap: tapChip)
-                } else if model.isLoading {
+            .tabRoot(title: AppTab.home.title, tab: .home) {
+                if !model.chips.isEmpty || !model.isLoading {
+                    FilterChips(titles: [Self.streamsChip] + model.chips.map(\.title), selected: selectedChip, onTap: tapChip)
+                } else {
                     LoadingChips()
                 }
             }
@@ -529,6 +552,8 @@ struct HomeView: View {
                 await model.load(.browse(YouTubeFeeds.home))
             }
             .task { if history.items.isEmpty { await history.load(.browse(YouTubeFeeds.history)) } }
+            // Here and not in Jump Back In: an empty card draws nothing, so its task never ran.
+            .task { await twitchLive.refresh() }
             .onChange(of: scenePhase) {
                 // Control Center only makes the app inactive, which changes nothing.
                 if scenePhase == .background { wasInBackground = true }
@@ -544,12 +569,33 @@ struct HomeView: View {
         selectedChip = nil
         async let feed: Void = model.load(.browse(YouTubeFeeds.home))
         async let watched: Void = history.load(.browse(YouTubeFeeds.history))
-        _ = await (feed, watched)
+        async let streams: Void = TwitchLive.shared.refresh(force: true)
+        _ = await (feed, watched, streams)
     }
 
     /// Tapping the selected chip clears it.
+    /// Ours, not YouTube's: only what's live, on Twitch and YouTube.
+    private static let streamsChip = "Streams"
+    private static let isLive: (FeedItem) -> Bool = {
+        if case .video(let video, _) = $0 { return video.isLive } else { return false }
+    }
+
+    private var showsStreams: Bool { selectedChip == Self.streamsChip }
+    private var twitchStreams: [TwitchChannel] { twitchLive.channels + twitchLive.suggested }
+
     private func tapChip(_ title: String) {
         let isSelected = selectedChip == title
+        // Filters what's already here, so it asks YouTube for nothing.
+        if title == Self.streamsChip {
+            let wasYouTubeChip = selectedChip != nil && !showsStreams
+            selectedChip = isSelected ? nil : title
+            if wasYouTubeChip {
+                model.beginSwitching()
+                Task { await model.load(.browse(YouTubeFeeds.home), keepChips: true) }
+            }
+            if !isSelected { Task { await twitchLive.refresh() } }
+            return
+        }
         selectedChip = isSelected ? nil : title
         let token = model.chips.first { $0.title == title }?.token
         model.beginSwitching()
@@ -563,27 +609,25 @@ struct HomeView: View {
     }
 }
 
-/// Resumes the latest unfinished video. The small covers swap into the large slot.
-private struct KeepWatchingCard: View {
+/// A quick way back in: the latest unfinished video, and the followed Twitch channels that are live now.
+/// History keeps the full list.
+private struct JumpBackInCard: View {
     let history: FeedModel
     @Environment(Router.self) private var router
-    @State private var selectedId: String?
+    @ObservedObject private var live = TwitchLive.shared
+    @EnvironmentObject private var settings: AppSettings
 
-    private static let shown = 8
     private static let thumbWidth = Layout.videoMedium
-    private static let smallThumbWidth = Layout.videoSmall
-    private static let playSize: CGFloat = 44
+    private static let playSize = HeaderRoundIcon.primarySize
 
-    private var videos: [(video: YouTubeVideo, extras: VideoExtras)] {
-        Array(history.unfinished.prefix(Self.shown))
-    }
+    private var main: (video: YouTubeVideo, extras: VideoExtras)? { history.unfinished.first }
 
     var body: some View {
         Group {
             if history.items.isEmpty, history.isLoading {
                 loading
-            } else if let main = videos.first(where: { $0.video.videoId == selectedId }) ?? videos.first {
-                card(main: main)
+            } else if main != nil || !streams.isEmpty {
+                card
             }
         }
         .onChange(of: router.current?.videoId) { _, videoId in
@@ -591,61 +635,68 @@ private struct KeepWatchingCard: View {
         }
     }
 
-    private func card(main: (video: YouTubeVideo, extras: VideoExtras)) -> some View {
-        VStack(alignment: .leading, spacing: Layout.rowSpacing) {
-            Text("Keep Watching").font(.headline)
-            Button { resume(main) } label: {
-                HStack(spacing: Layout.rowSpacing) {
-                    thumb(main).frame(width: Self.thumbWidth)
-                    VStack(alignment: .leading, spacing: Layout.cardSpacing) {
-                        VideoTitle(video: main.video)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                        Text(timeLeft(main))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: Self.playSize, height: Self.playSize)
-                        .background(.tint, in: .circle)
-                }
-                .contentShape(.rect)
-            }
-            .buttonStyle(ZoomPressStyle(scale: 0.98))
-            .accessibilityLabel("Resume \(main.video.title), \(timeLeft(main))")
-            .videoMenu(main.video, background: Color(.secondarySystemBackground))
+    /// Followed channels first, then suggested ones.
+    private var streams: [(channel: TwitchChannel, isSuggested: Bool)] {
+        live.channels.map { ($0, false) } + live.suggested.map { ($0, true) }
+    }
 
-            let others = videos.filter { $0.video.videoId != main.video.videoId }
-            if !others.isEmpty {
+    private var card: some View {
+        VStack(alignment: .leading, spacing: Layout.rowSpacing) {
+            Text("Jump Back In").font(.title3.bold())
+            if let main {
+                resumeRow(main)
+            }
+            if !streams.isEmpty {
+                if main != nil {
+                    Divider().padding(.horizontal, -Layout.rowSpacing)
+                }
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Layout.chipSpacing) {
-                        ForEach(others, id: \.video.videoId) { entry in
-                            Button {
-                                withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : .snappy) { selectedId = entry.video.videoId }
-                            } label: {
-                                thumb(entry).frame(width: Self.smallThumbWidth)
-                            }
-                            .buttonStyle(ZoomPressStyle(scale: 0.98))
-                            .accessibilityLabel("Show \(entry.video.title)")
+                    HStack(alignment: .top, spacing: Layout.menuRowSpacing) {
+                        ForEach(streams, id: \.channel.id) { stream in
+                            Button { router.play(stream.channel.video) } label: { LiveFace(channel: stream.channel, isSuggested: stream.isSuggested) }
+                                .buttonStyle(ZoomPressStyle(scale: 0.96))
+                                .accessibilityLabel("Watch \(stream.channel.name) live, \(stream.channel.game)")
+                                .accessibilityHint(stream.isSuggested ? "Suggested, not followed" : "")
                         }
                     }
+                    // Room for the ring and the LIVE label, which sit outside each picture.
+                    .padding(.vertical, Layout.cardSpacing)
                 }
+                // Scrolls out to the card's edges, and starts in line with the title.
+                .contentMargins(.horizontal, Layout.rowSpacing, for: .scrollContent)
+                .padding(.horizontal, -Layout.rowSpacing)
             }
         }
         .padding(Layout.rowSpacing)
         .homeCardBackground()
     }
 
-    private func thumb(_ entry: (video: YouTubeVideo, extras: VideoExtras)) -> some View {
-        Thumbnail(url: entry.video.thumbnailURL, videoId: entry.video.videoId, isShort: entry.video.isShort)
-            .overlay { WatchProgressLine(video: entry.video, extras: entry.extras) }
-            .deArrowMark(entry.video.videoId)
-            .clipShape(.rect(cornerRadius: Layout.tileRadius))
-            .videoZoomSource(entry.video.videoId)
+    private func resumeRow(_ main: (video: YouTubeVideo, extras: VideoExtras)) -> some View {
+        Button { resume(main) } label: {
+            HStack(spacing: Layout.rowSpacing) {
+                Thumbnail(url: main.video.thumbnailURL, videoId: main.video.videoId, isShort: main.video.isShort)
+                    .overlay { WatchProgressLine(video: main.video, extras: main.extras) }
+                    .deArrowMark(main.video.videoId, size: 26)
+                    .clipShape(.rect(cornerRadius: Layout.tileRadius))
+                    .videoZoomSource(main.video.videoId)
+                    .frame(width: Self.thumbWidth)
+                VStack(alignment: .leading, spacing: Layout.cardSpacing) {
+                    VideoTitle(video: main.video)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Text(timeLeft(main))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                HeaderRoundIcon(systemImage: "play.fill", primary: settings.accentColor)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(ZoomPressStyle(scale: 0.98))
+        .accessibilityLabel("Resume \(main.video.title), \(timeLeft(main))")
+        .videoMenu(main.video, background: Color(.secondarySystemBackground))
     }
 
     private func timeLeft(_ entry: (video: YouTubeVideo, extras: VideoExtras)) -> String {
@@ -675,18 +726,44 @@ private struct KeepWatchingCard: View {
                 }
                 ShimmerBlock(width: Self.playSize, height: Self.playSize, radius: Self.playSize / 2)
             }
-            HStack(spacing: Layout.chipSpacing) {
-                ForEach(0..<3, id: \.self) { _ in
-                    ShimmerFill(radius: Layout.tileRadius)
-                        .aspectRatio(Layout.videoAspect, contentMode: .fit)
-                        .frame(width: Self.smallThumbWidth)
-                }
-            }
         }
         .padding(Layout.rowSpacing)
         .homeCardBackground()
         .shimmerClock()
         .accessibilityHidden(true)
+    }
+}
+
+/// A live streamer's face, ringed in the colour of its LIVE tag on cards.
+private struct LiveFace: View {
+    let channel: TwitchChannel
+    /// From a channel you don't follow: white instead of red, like its card's LIVE badge.
+    var isSuggested = false
+    private static let size: CGFloat = 56
+    private static let ringGap: CGFloat = 3
+
+    private var mark: Color { isSuggested ? .white : .red }
+
+    var body: some View {
+        VStack(spacing: Layout.chipSpacing + 2) {
+            CachedImage(url: channel.avatar, maxPixels: 168)
+                .frame(width: Self.size, height: Self.size)
+                .clipShape(.circle)
+                .padding(Self.ringGap)
+                .overlay(Circle().stroke(mark, lineWidth: 2))
+                .overlay(alignment: .bottom) {
+                    Text("LIVE")
+                        .font(.caption2.weight(.heavy))
+                        .foregroundStyle(isSuggested ? .black : .white)
+                        .padding(.horizontal, Layout.cardSpacing + 1)
+                        .background(mark, in: .rect(cornerRadius: Layout.rowPadding, style: .continuous))
+                        .offset(y: Layout.rowPadding)
+                }
+            Text(channel.name)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .frame(width: Self.size + Self.ringGap * 2)
+        }
     }
 }
 
@@ -708,6 +785,7 @@ private struct LoadingChips: View {
 struct SubsView: View {
     private enum Filter: String, CaseIterable {
         case new = "New"
+        case live = "Live"
         case notSeenLately = "Not Seen Lately"
         case videos = "Videos"
         case shorts = "Shorts"
@@ -720,6 +798,7 @@ struct SubsView: View {
     @State private var filter: Filter?
     @State private var newVideos: [YouTubeVideo] = []
     @State private var didAddHistory = false
+    @ObservedObject private var twitchLive = TwitchLive.shared
     @Environment(Router.self) private var router
 
     // ponytail: only this many channels get their posts read, one request each. Raise it if posts go missing.
@@ -744,6 +823,10 @@ struct SubsView: View {
             return {
                 if case .video(let video, _) = $0 { return video.isNew } else { return false }
             }
+        case .live:
+            return {
+                if case .video(let video, _) = $0 { return video.isLive } else { return false }
+            }
         case .notSeenLately:
             let isStale = WatchedChannels.staleCheck()
             return {
@@ -765,13 +848,24 @@ struct SubsView: View {
         switch filter {
         case .shorts: .shorts
         case .posts: .posts
-        case .new, .notSeenLately, .videos, nil: .videos
+        case .new, .live, .notSeenLately, .videos, nil: .videos
         }
     }
 
     var body: some View {
         NavigationStack {
-            FeedContent(model: filter == .posts ? posts : model, retry: reload, keeps: keeps, loading: loadingKind, shortsGrid: filter == .shorts) {
+            FeedContent(
+                model: filter == .posts ? posts : model, retry: reload, keeps: keeps, loading: loadingKind, shortsGrid: filter == .shorts,
+                hidesEmptyState: filter == .live && !twitchLive.channels.isEmpty
+            ) {
+                // ponytail: Twitch first, then YouTube; YouTube's viewer counts are text, so the two aren't sorted together.
+                if filter == .live {
+                    ForEach(twitchLive.channels) { channel in
+                        TwitchStreamRow(channel: channel)
+                            .padding(.horizontal, Layout.screenPadding)
+                            .padding(.vertical, Layout.rowSpacing)
+                    }
+                }
                 if filter == nil || filter == .videos {
                     if !newVideos.isEmpty {
                         NewVideosCard(videos: newVideos)
@@ -780,7 +874,7 @@ struct SubsView: View {
                     }
                 }
             }
-            .tabRoot(title: "Subs", tab: .subs) {
+            .tabRoot(title: AppTab.subs.title, tab: .subs) {
                 FilterChips(titles: Filter.allCases.map(\.rawValue), selected: filter?.rawValue) { title in
                     let tapped = Filter(rawValue: title)
                     filter = filter == tapped ? nil : tapped
@@ -798,6 +892,7 @@ struct SubsView: View {
                     await WatchedChannels.addHistory()
                     didAddHistory = true
                 }
+                if filter == .live { await twitchLive.refresh() }
                 if filter == .posts {
                     if posts.items.isEmpty { await loadPosts() }
                 } else if let keeps {
@@ -898,6 +993,20 @@ struct ScopedSearchPage: View {
     }
 }
 
+/// The videos YouTube files under one hashtag.
+struct HashtagPage: View {
+    let tag: String
+    @State private var model = FeedModel()
+
+    var body: some View {
+        FeedContent(model: model, retry: { await model.load(.hashtag(tag)) }) { EmptyView() }
+            .environment(\.showsRowAvatars, true)
+            .navigationTitle("#" + tag)
+            .navigationBarTitleDisplayMode(.inline)
+            .task { await model.load(.hashtag(tag)) }
+    }
+}
+
 /// A ScrollView like Woof Music's pages: a List row fires every link inside it at once.
 struct FeedContent<Header: View>: View {
     let model: FeedModel
@@ -909,6 +1018,10 @@ struct FeedContent<Header: View>: View {
     var loading: LoadingKind?
     /// Shorts in a two-column grid at the big size, when a filter shows only Shorts.
     var shortsGrid = false
+    /// Set when the header already fills the page, so "Nothing Here" stays away.
+    var hidesEmptyState = false
+    /// Live Twitch streams slotted in among the rows, one after every few.
+    var mixedIn: [TwitchChannel] = []
     @ViewBuilder let header: () -> Header
 
     private var loadingKind: LoadingKind { loading ?? (isCompact ? .compact : .videos) }
@@ -925,16 +1038,16 @@ struct FeedContent<Header: View>: View {
                 if model.isSwitching {
                     LoadingRows(kind: loadingKind, shortsGrid: shortsGrid).transition(.opacity)
                 } else {
-                    if shownIds.isEmpty {
+                    if shownIds.isEmpty, !hidesEmptyState {
                         emptyState
                     }
-                    FeedRows(model: model, isCompact: isCompact, shortsGrid: shortsGrid, keeps: keeps)
+                    FeedRows(model: model, isCompact: isCompact, shortsGrid: shortsGrid, keeps: keeps, mixedIn: mixedIn)
                 }
             }
             .animation(.smooth(duration: 0.4), value: shownIds)
             .animation(.smooth(duration: 0.3), value: model.isSwitching)
         }
-        .refreshable { await retry() }
+        .tappingRefresh { await retry() }
     }
 
     @ViewBuilder
@@ -970,8 +1083,11 @@ struct FeedRows: View {
     /// Set on a playlist, so a tapped video carries on with the ones after it.
     var playlistTitle: String?
     var keeps: ((FeedItem) -> Bool)?
+    var mixedIn: [TwitchChannel] = []
     @Environment(Router.self) private var router
     @State private var pendingRemoval: PendingRemoval?
+    /// One mixed-in card after this many rows. A Shorts shelf is one row.
+    private static let mixEvery = 5
 
     private struct PendingRemoval {
         let item: FeedItem
@@ -980,7 +1096,7 @@ struct FeedRows: View {
 
     var body: some View {
         let shown = keeps.map { model.items.filter($0) } ?? model.items
-        ForEach(shown) { item in
+        ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
             row(item)
                 .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 24)), removal: .opacity))
                 .onScrollVisibilityChange(threshold: 0.6) { isVisible in
@@ -990,6 +1106,12 @@ struct FeedRows: View {
                     // The next page follows the last row shown, which a filter can move up.
                     if item.id == shown.last?.id, let last = model.items.last { await model.loadMore(after: last) }
                 }
+            if let channel = mixed(after: index) {
+                TwitchStreamRow(channel: channel)
+                    .padding(.horizontal, Layout.screenPadding)
+                    .padding(.vertical, isCompact ? Layout.rowPadding : Layout.rowSpacing)
+                    .transition(.opacity)
+            }
         }
         .confirmationDialog(
             "Remove from this playlist?",
@@ -999,6 +1121,12 @@ struct FeedRows: View {
         ) { removal in
             Button("Remove from Playlist", role: .destructive) { remove(removal) }
         }
+    }
+
+    private func mixed(after index: Int) -> TwitchChannel? {
+        let count = index + 1
+        guard count % Self.mixEvery == 0, count / Self.mixEvery <= mixedIn.count else { return nil }
+        return mixedIn[count / Self.mixEvery - 1]
     }
 
     private func removal(of item: FeedItem, extras: VideoExtras) -> (() -> Void)? {
@@ -1105,11 +1233,14 @@ struct VideoRow: View {
     let onPlay: () -> Void
     @Environment(Router.self) private var router
 
-    private var details: String {
-        [video.channelTitle, video.viewCountText, video.publishedTimeText]
+    private var stats: String {
+        [video.viewCountText, video.publishedTimeText]
             .compactMap { $0 }
             .joined(separator: " · ")
     }
+
+    /// Past the notch when there's a picture, near the edge when there isn't.
+    private var textInset: CGFloat { hasAvatar ? CoverNotch.textInset : Layout.rowSpacing }
 
     private var hasAvatar: Bool {
         extras.collaborators.count > 1 || video.channelAvatarURL != nil
@@ -1119,47 +1250,53 @@ struct VideoRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: onPlay) {
                 Thumbnail(url: video.thumbnailURL, videoId: video.videoId, isShort: video.isShort, showsDownload: false)
-                    .fadesAtBottom()
                     .overlay { WatchProgressLine(video: video, extras: extras) }
-                    .deArrowMark(video.videoId)
-                    .overlay(alignment: .topTrailing) {
-                        HStack(spacing: 0) {
-                            DownloadedBadge(videoId: video.videoId)
+                    // The title makes room for the length in the same corner. The status hangs under the picture.
+                    .overlay(alignment: .bottomLeading) {
+                        HStack(alignment: .bottom, spacing: 0) {
+                            CoverTitle(video: video, leading: textInset)
+                            Spacer(minLength: 0)
+                            if !hasAvatar { StatusBadge(video: video, extras: extras) }
                             VideoBadge(video: video, extras: extras)
                         }
                     }
-                    .overlay(alignment: .topLeading) { NewBadge(video: video, extras: extras) }
+                    .deArrowMark(video.videoId)
+                    .overlay(alignment: .topTrailing) { DownloadedBadge(videoId: video.videoId) }
                     .clipShape(.rect(cornerRadius: Layout.tileRadius))
+                    .notched(isOn: hasAvatar)
                     .videoZoomSource(video.videoId)
             }
             .buttonStyle(ZoomPressStyle(scale: 0.98))
-            HStack(alignment: .top, spacing: Layout.chipSpacing) {
-                avatar
+            .notchAvatar { avatar }
+            // Above the lines under it, so the picture's lower half still opens the channel.
+            .zIndex(1)
+            // Side by side rather than nested, so a tap on Like doesn't also play the video.
+            HStack(spacing: Layout.chipSpacing) {
                 Button(action: onPlay) {
-                    HStack(spacing: 0) {
-                        VStack(alignment: .leading, spacing: Layout.cardSpacing) {
-                            VideoTitle(video: video)
-                                .font(.subheadline.weight(.medium))
-                                .lineLimit(2, reservesSpace: isNarrow)
-                                .multilineTextAlignment(.leading)
-                            HStack(spacing: Layout.chipSpacing) {
-                                Text(details)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                                if !isNarrow { VoteLine(videoId: video.videoId).fixedSize() }
-                            }
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let channel = video.channelTitle {
+                            Text(channel)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
                         }
-                        Spacer(minLength: 0)
+                        Text(stats)
+                            .font(.caption)
+                            .lineLimit(1)
                     }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: hasAvatar ? CoverNotch.radius : 0, alignment: .topLeading)
                     .contentShape(.rect)
                 }
                 .buttonStyle(ZoomPressStyle(scale: 0.98))
-                .padding(.top, hasAvatar ? ShortCard.avatarSize / 2 + Layout.cardSpacing : 0)
+                // Kept apart from the cover, so the capsule doesn't touch it.
+                // Twitch has no likes.
+                if !isNarrow, !video.videoId.hasPrefix(Twitch.videoIdPrefix) {
+                    VoteButtons(videoId: video.videoId).fixedSize().padding(.top, Layout.rowPadding)
+                }
             }
-            .padding(.horizontal, Layout.rowPadding)
-            .padding(.top, hasAvatar ? -ShortCard.avatarSize / 2 : Layout.chipSpacing)
+            .padding(.leading, textInset)
+            .padding(.trailing, Layout.rowPadding)
+            .padding(.top, Layout.cardSpacing)
         }
     }
 
@@ -1173,7 +1310,8 @@ struct VideoRow: View {
                     }
                 }
             } label: {
-                AvatarStack(urls: extras.collaborators.map(\.avatar), size: ShortCard.avatarSize)
+                AvatarStack(urls: extras.collaborators.map(\.avatar), size: CoverNotch.size)
+                    .statusRing(status, ringed: false)
                     .contentShape(.rect)
             }
             .accessibilityLabel("Creators")
@@ -1182,55 +1320,102 @@ struct VideoRow: View {
                 Button {
                     router.openChannel(id)
                 } label: {
-                    Avatar(url: url, size: ShortCard.avatarSize)
-                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
+                    Avatar(url: url, size: CoverNotch.size).statusRing(status)
                 }
                 .buttonStyle(ZoomPressStyle())
                 .accessibilityLabel("Open \(video.channelTitle ?? "Channel")")
             } else {
-                Avatar(url: url, size: ShortCard.avatarSize)
-                    .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
+                Avatar(url: url, size: CoverNotch.size).statusRing(status)
             }
+        }
+    }
+
+    private var status: VideoStatus? { VideoStatus(video: video, extras: extras) }
+}
+
+/// LIVE, UPCOMING, or New for a video from a channel you follow, published under a day ago and not started yet.
+/// Red for a live channel you follow, white for one you don't, green for New.
+struct VideoStatus {
+    let text: String
+    let fill: Color
+    let ink: Color
+
+    @MainActor
+    init?(video: YouTubeVideo, extras: VideoExtras) {
+        let ids = Subscriptions.shared.ids
+        let isFollowed = video.isTwitch
+            ? !extras.isSuggestedStream
+            : video.channelId.map { ids.contains($0) } == true || extras.collaborators.contains { ids.contains($0.channelId) }
+        if video.isLive {
+            text = "LIVE"
+            fill = isFollowed ? Color.red : Color.white
+            ink = isFollowed ? Color.white : Color.black
+        } else if extras.isUpcoming {
+            text = "UPCOMING"
+            fill = Color.black.opacity(0.78)
+            ink = Color.white
+        } else if video.isRecent, isFollowed, extras.progress == nil, WatchPositions.progress(of: video) == nil {
+            text = "New"
+            fill = Color.green
+            ink = Color.black
+        } else {
+            return nil
         }
     }
 }
 
-/// Marks a video from a channel you follow, published under a day ago and not started yet.
-private struct NewBadge: View {
+/// The status on the cover, for rows without a channel picture to hang it under.
+struct StatusBadge: View {
     let video: YouTubeVideo
     let extras: VideoExtras
     var isCompact = false
-    private var subscriptions: Subscriptions { .shared }
-
-    private var isFromFollowedChannel: Bool {
-        video.channelId.map { subscriptions.ids.contains($0) } == true
-            || extras.collaborators.contains { subscriptions.ids.contains($0.channelId) }
-    }
 
     var body: some View {
-        if video.isRecent, !video.isLive, !extras.isUpcoming, isFromFollowedChannel,
-           extras.progress == nil, WatchPositions.progress(of: video) == nil {
-            Text("New")
+        if let status = VideoStatus(video: video, extras: extras) {
+            Text(status.text)
                 .font((isCompact ? Font.caption2 : Font.caption).weight(.bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(status.ink)
                 .padding(.horizontal, isCompact ? Layout.cardSpacing : Layout.rowPadding)
                 .padding(.vertical, 2)
-                .background(.tint, in: .rect(cornerRadius: Layout.rowPadding, style: .continuous))
+                .background(status.fill, in: .rect(cornerRadius: Layout.rowPadding, style: .continuous))
                 .padding(isCompact ? Layout.cardSpacing : Layout.rowPadding)
                 .allowsHitTesting(false)
         }
     }
 }
 
-/// The time on a thumbnail. It stays black, because the accent color marks what you can act on.
+extension View {
+    /// A ring round a channel's picture and its status in a tag under it, as on Twitch.
+    /// `ringed` is off for a group of pictures, which isn't round.
+    func statusRing(_ status: VideoStatus?, ringed: Bool = true) -> some View {
+        overlay {
+            if let status, ringed {
+                Circle().stroke(status.fill, lineWidth: CoverNotch.gap - 1).padding(-(CoverNotch.gap - 1) / 2)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let status {
+                Text(status.text)
+                    .font(.system(size: 9, weight: .heavy))
+                    .foregroundStyle(status.ink)
+                    .padding(.horizontal, Layout.cardSpacing)
+                    .padding(.vertical, 1)
+                    .background(status.fill, in: .rect(cornerRadius: Layout.cardSpacing, style: .continuous))
+                    .offset(y: Layout.rowPadding)
+                    .fixedSize()
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 struct VideoBadge: View {
     let video: YouTubeVideo
     let extras: VideoExtras
     var isCompact = false
 
     private var text: String? {
-        if video.isLive { return "LIVE" }
-        if extras.isUpcoming { return "UPCOMING" }
+        guard !video.isLive, !extras.isUpcoming else { return nil }
         return video.durationSeconds.flatMap { $0 > 0 ? Double($0).clockText : nil }
     }
 
@@ -1241,51 +1426,107 @@ struct VideoBadge: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, isCompact ? Layout.cardSpacing : Layout.rowPadding)
                 .padding(.vertical, 2)
-                .background(video.isLive ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.black.opacity(0.78)), in: .rect(cornerRadius: Layout.rowPadding, style: .continuous))
+                .background(Color.black.opacity(0.78), in: .rect(cornerRadius: Layout.rowPadding, style: .continuous))
                 .padding(isCompact ? Layout.cardSpacing : Layout.rowPadding)
                 .allowsHitTesting(false)
         }
     }
 }
 
-/// Likes and dislikes under a video card. Waits a moment, so rows scrolled past don't ask for them.
-private struct VoteLine: View {
+/// Ratings given from cards, so a card scrolled away and back still shows them.
+@MainActor
+private enum CardRatings {
+    static var statuses: [String: String] = [:]
+}
+
+/// Like and Dislike under a video card, with the counts. The counts wait a moment, so rows scrolled past don't ask for them.
+private struct VoteButtons: View {
     let videoId: String
-    @AppStorage(DislikeCounts.enabledKey) private var isEnabled = true
+    @AppStorage(DislikeCounts.enabledKey) private var showsCounts = true
+    @Environment(Router.self) private var router
     @State private var votes: VoteCounts?
+    @State private var status = "INDIFFERENT"
+    @State private var likeTaps = 0
+    @State private var dislikeTaps = 0
+
+    private var isLiked: Bool { status == "LIKE" }
+    private var isDisliked: Bool { status == "DISLIKE" }
 
     var body: some View {
-        if isEnabled {
-            HStack(spacing: Layout.rowPadding) {
-                Label(votes?.likes.compactText ?? "–", systemImage: "hand.thumbsup")
-                Text("|").foregroundStyle(.tertiary)
-                Label(votes?.dislikes.compactText ?? "–", systemImage: "hand.thumbsdown")
+        HStack(spacing: 0) {
+            Button {
+                likeTaps += 1
+                rate(isLiked ? "INDIFFERENT" : "LIKE")
+            } label: {
+                vote(icon: isLiked ? "hand.thumbsup.fill" : "hand.thumbsup",
+                     count: votes.map { $0.likes + (isLiked ? 1 : 0) }, isActive: isLiked)
+                    .glyphMotion(isLiked ? .like(emojis: []) : .deflate, trigger: likeTaps)
             }
-            .labelStyle(VoteLabelStyle())
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .opacity(votes == nil ? 0 : 1)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(votes.map { "\($0.likes.compactText) likes, \($0.dislikes.compactText) dislikes" } ?? "")
-            .task(id: videoId) {
-                votes = DislikeCounts.cached(videoId: videoId)
-                guard votes == nil else { return }
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled else { return }
-                votes = await DislikeCounts.votes(videoId: videoId)
+            .accessibilityLabel("Like")
+            .accessibilityValue(votes.map { "\($0.likes.compactText)" } ?? "")
+            .accessibilityAddTraits(isLiked ? .isSelected : [])
+            Divider().frame(height: 14)
+            Button {
+                dislikeTaps += 1
+                rate(isDisliked ? "INDIFFERENT" : "DISLIKE")
+            } label: {
+                vote(icon: isDisliked ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                     count: votes.map { $0.dislikes + (isDisliked ? 1 : 0) }, isActive: isDisliked)
+                    .glyphMotion(isDisliked ? .dislike : .rise, trigger: dislikeTaps)
+            }
+            .accessibilityLabel("Dislike")
+            .accessibilityValue(votes.map { "\($0.dislikes.compactText)" } ?? "")
+            .accessibilityAddTraits(isDisliked ? .isSelected : [])
+        }
+        // The player's like capsule, smaller.
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .sensoryFeedback(.impact(weight: .light), trigger: status)
+        .task(id: videoId) {
+            status = CardRatings.statuses[videoId] ?? "INDIFFERENT"
+            guard showsCounts else { return }
+            votes = DislikeCounts.cached(videoId: videoId)
+            guard votes == nil else { return }
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            votes = await DislikeCounts.votes(videoId: videoId)
+        }
+    }
+
+    private func vote(icon: String, count: Int?, isActive: Bool) -> some View {
+        HStack(spacing: Layout.cardSpacing) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+            if showsCounts {
+                Text(count?.compactText ?? "–")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, Layout.chipSpacing + Layout.cardSpacing)
+        .frame(height: Self.height)
+        // Reaches 44 pt, using the space around the capsule.
+        .contentShape(Rectangle().inset(by: -(44 - Self.height) / 2))
+    }
+
+    private static let height: CGFloat = 32
+
+    private func rate(_ new: String) {
+        let previous = status
+        status = new
+        CardRatings.statuses[videoId] = new
+        Task {
+            do {
+                try await YouTubeAPI.setLike(new, videoId: videoId)
+            } catch {
+                status = previous
+                CardRatings.statuses[videoId] = previous
+                router.actionMessage = error.localizedDescription
             }
         }
     }
 }
 
-private struct VoteLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 3) {
-            configuration.icon.imageScale(.small)
-            configuration.title
-        }
-    }
-}
 
 /// How much of the video was watched, along the bottom of its thumbnail.
 struct WatchProgressLine: View {
@@ -1313,27 +1554,83 @@ struct WatchProgressLine: View {
 /// It's centered on that edge, so rows with it put the duration in the bottom-left corner.
 struct RowAvatar: View {
     let url: String?
+    var status: VideoStatus?
 
     static let size = Layout.avatarSmall
     static let overlap = size / 2 + Layout.rowSpacing
 
     var body: some View {
         Avatar(url: url, size: Self.size)
-            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
+            .statusRing(status)
             .padding(.leading, -Self.overlap)
     }
 }
 
+/// A round cut in a cover for the channel's picture, with a gap all round: on the bottom-left corner
+/// of cards, where the picture sits half on the cover and half under it, and on the right edge of rows.
+enum CoverNotch {
+    static let size = Layout.avatarSmall
+    static let gap: CGFloat = 3
+    static let radius = size / 2 + gap
+    /// From the cover's left edge to the picture, on cards.
+    static let inset = Layout.rowPadding
+    /// Where a card's title and the lines under the cover start, past the notch.
+    static let textInset = inset + size / 2 + radius + Layout.rowPadding
+
+    enum Place { case bottomLeading, trailing }
+
+    struct Cut: Shape {
+        let place: Place
+
+        func path(in rect: CGRect) -> Path {
+            let center = place == .bottomLeading
+                ? CGPoint(x: rect.minX + CoverNotch.inset + CoverNotch.size / 2, y: rect.maxY)
+                : CGPoint(x: rect.maxX, y: rect.midY)
+            var path = Path(rect)
+            path.addEllipse(in: CGRect(x: center.x - CoverNotch.radius, y: center.y - CoverNotch.radius, width: CoverNotch.radius * 2, height: CoverNotch.radius * 2))
+            return path
+        }
+    }
+}
+
 extension View {
-    /// The cover's right side fades into the page under the channel's picture, as Short cards fade at the bottom.
-    func fadesAtTrailing(_ isOn: Bool = true) -> some View {
+    func notched(_ place: CoverNotch.Place = .bottomLeading, isOn: Bool = true) -> some View {
         mask {
-            HStack(spacing: 0) {
-                Color.black
-                LinearGradient(colors: [.black, .black.opacity(isOn ? 0.2 : 1)], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: RowAvatar.size)
+            if isOn {
+                CoverNotch.Cut(place: place).fill(style: FillStyle(eoFill: true))
+            } else {
+                Rectangle()
             }
         }
+    }
+
+    /// The channel's picture in a card's notch, half on the cover and half under it.
+    func notchAvatar<Picture: View>(@ViewBuilder _ picture: () -> Picture) -> some View {
+        overlay(alignment: .bottomLeading) {
+            picture()
+                .padding(.leading, CoverNotch.inset)
+                .offset(y: CoverNotch.size / 2)
+        }
+    }
+}
+
+/// A card's title on the video, next to the notch. A shadow keeps it legible, so the cover needs no fade.
+struct CoverTitle: View {
+    let video: YouTubeVideo
+    var font = Font.subheadline.weight(.semibold)
+    var leading = CoverNotch.textInset
+
+    var body: some View {
+        VideoTitle(video: video)
+            .font(font)
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .multilineTextAlignment(.leading)
+            .shadow(color: .black.opacity(0.85), radius: 1, y: 1)
+            .shadow(color: .black.opacity(0.55), radius: 5)
+            .padding(.leading, leading)
+            .padding([.trailing, .bottom], Layout.chipSpacing)
+            .allowsHitTesting(false)
     }
 }
 
@@ -1346,7 +1643,6 @@ extension EnvironmentValues {
 struct CompactVideoRow: View {
     let video: YouTubeVideo
     var extras = VideoExtras()
-    @AppStorage(DeArrow.enabledKey) private var isDeArrowOn = false
     @Environment(\.showsRowAvatars) private var showsAvatar
     @State private var avatar: String?
 
@@ -1354,17 +1650,23 @@ struct CompactVideoRow: View {
         HStack(spacing: Layout.rowSpacing) {
             VideoCover(video: video, maxPixels: 336)
                 .frame(width: Layout.videoSmall, height: Layout.videoSmall / Layout.videoAspect)
-                .fadesAtTrailing(showsAvatar)
                 .overlay { WatchProgressLine(video: video, extras: extras) }
-                .deArrowMark(video.videoId, size: 16)
-                // The corner belongs to DeArrow's mark when it can appear, and to the channel's picture when it shows.
-                .overlay(alignment: isDeArrowOn || showsAvatar ? .bottomLeading : .bottomTrailing) { VideoBadge(video: video, extras: extras, isCompact: true) }
-                .overlay(alignment: .topLeading) { NewBadge(video: video, extras: extras, isCompact: true) }
-                .downloadBadge(video.videoId)
+                .deArrowMark(video.videoId, size: 24)
+                .overlay(alignment: .topTrailing) {
+                    HStack(spacing: 0) {
+                        DownloadedBadge(videoId: video.videoId)
+                        if !showsAvatar { StatusBadge(video: video, extras: extras, isCompact: true) }
+                    }
+                }
+                // The channel's picture takes the right edge, so the length moves to the bottom left.
+                .overlay(alignment: showsAvatar ? .bottomLeading : .bottomTrailing) {
+                    VideoBadge(video: video, extras: extras, isCompact: true)
+                }
                 .clipShape(.rect(cornerRadius: Layout.cardRadius, style: .continuous))
+                .notched(.trailing, isOn: showsAvatar)
                 .videoZoomSource(video.videoId)
             if showsAvatar {
-                RowAvatar(url: avatar ?? video.channelAvatarURL)
+                RowAvatar(url: avatar ?? video.channelAvatarURL, status: VideoStatus(video: video, extras: extras))
                     .padding(.trailing, -Layout.rowSpacing / 2)
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -1430,30 +1732,31 @@ struct LoadingRows: View {
     private var videoRow: some View {
         VStack(alignment: .leading, spacing: 0) {
             ShimmerFill(radius: Layout.tileRadius).aspectRatio(Layout.videoAspect, contentMode: .fit)
-            HStack(alignment: .top, spacing: Layout.chipSpacing) {
-                ShimmerBlock(width: ShortCard.avatarSize, height: ShortCard.avatarSize, radius: ShortCard.avatarSize / 2)
-                    .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
-                VStack(alignment: .leading, spacing: Layout.cardSpacing) {
-                    LoadingLine(height: 15)
-                    LoadingLine(height: 15, shortBy: 90)
-                    LoadingLine(height: 11, shortBy: 150)
-                }
-                .padding(.top, ShortCard.avatarSize / 2 + Layout.cardSpacing)
+                .notched()
+                .notchAvatar { notchPicture }
+            VStack(alignment: .leading, spacing: Layout.cardSpacing) {
+                LoadingLine(height: 11, shortBy: 90)
+                LoadingLine(height: 11, shortBy: 150)
             }
-            .padding(.horizontal, Layout.rowPadding)
-            .padding(.top, -ShortCard.avatarSize / 2)
+            .padding(.leading, CoverNotch.textInset)
+            .padding(.top, Layout.cardSpacing + 2)
         }
         .padding(.horizontal, Layout.screenPadding)
         .padding(.vertical, Layout.rowSpacing)
     }
 
+    private var notchPicture: some View {
+        ShimmerBlock(width: CoverNotch.size, height: CoverNotch.size, radius: CoverNotch.size / 2)
+    }
+
     private var compactRow: some View {
         HStack(spacing: Layout.rowSpacing) {
             ShimmerBlock(width: Layout.videoSmall, height: Layout.videoSmall / Layout.videoAspect, radius: Layout.cardRadius)
+                .notched(.trailing, isOn: showsAvatar)
             if showsAvatar {
-                ShimmerBlock(width: RowAvatar.size, height: RowAvatar.size, radius: RowAvatar.size / 2)
-                    .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
+                notchPicture
                     .padding(.leading, -RowAvatar.overlap)
+                    .padding(.trailing, -Layout.rowSpacing / 2)
             }
             VStack(alignment: .leading, spacing: Layout.cardSpacing) {
                 LoadingLine(height: 14)
@@ -1494,15 +1797,14 @@ struct LoadingRows: View {
     private func shortCard(width: CGFloat?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ShimmerFill(radius: Layout.tileRadius).aspectRatio(Layout.shortAspect, contentMode: .fit)
-            HStack(spacing: Layout.chipSpacing) {
-                ShimmerBlock(width: ShortCard.avatarSize, height: ShortCard.avatarSize, radius: ShortCard.avatarSize / 2)
-                VStack(alignment: .leading, spacing: Layout.cardSpacing) {
-                    LoadingLine(height: 11)
-                    LoadingLine(height: 11, shortBy: 30)
-                }
+                .notched()
+                .notchAvatar { notchPicture }
+            VStack(alignment: .leading, spacing: Layout.cardSpacing) {
+                LoadingLine(height: 11, shortBy: 10)
+                LoadingLine(height: 11, shortBy: 30)
             }
-            .padding(.horizontal, Layout.rowPadding)
-            .padding(.top, -ShortCard.avatarSize / 2)
+            .padding(.leading, CoverNotch.textInset)
+            .padding(.top, Layout.cardSpacing + 2)
         }
         .frame(width: width)
     }
@@ -1570,8 +1872,8 @@ struct LoadingTextRows: View {
     private var notificationRow: some View {
         HStack(spacing: Layout.rowSpacing) {
             ShimmerBlock(width: Layout.videoSmall, height: Layout.videoSmall / Layout.videoAspect, radius: Layout.cardRadius)
+                .notched(.trailing)
             ShimmerBlock(width: RowAvatar.size, height: RowAvatar.size, radius: RowAvatar.size / 2)
-                .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
                 .padding(.leading, -RowAvatar.overlap)
                 .padding(.trailing, -Layout.rowSpacing / 2)
             VStack(alignment: .leading, spacing: Layout.cardSpacing) {
@@ -1599,6 +1901,58 @@ struct Thumbnail: View {
                 if showsDownload { DownloadedBadge(videoId: videoId) }
             }
             .clipShape(.rect(cornerRadius: Layout.tileRadius))
+    }
+}
+
+/// Up Next on both player pages: a stream, then three cards, while both last. All the Shorts make one carousel, which counts as one card, as on Home.
+struct UpNextList: View {
+    let videos: [YouTubeVideo]
+    var streams: [TwitchChannel] = []
+    private static let cardsPerStream = 3
+
+    private enum Entry: Identifiable {
+        case stream(TwitchChannel)
+        case video(YouTubeVideo)
+        case shorts([YouTubeVideo])
+
+        var id: String {
+            switch self {
+            case .stream(let channel): Twitch.videoIdPrefix + channel.login
+            case .video(let video): video.videoId
+            case .shorts: "shorts"
+            }
+        }
+    }
+
+    private var entries: [Entry] {
+        let shorts = videos.filter(\.isShort)
+        // The carousel takes the place of the first Short.
+        var cards = videos.compactMap { video -> Entry? in
+            guard video.isShort else { return .video(video) }
+            return video.videoId == shorts.first?.videoId ? .shorts(shorts) : nil
+        }[...]
+        var streams = self.streams[...]
+        var entries: [Entry] = []
+        while !streams.isEmpty || !cards.isEmpty {
+            if let stream = streams.popFirst() { entries.append(.stream(stream)) }
+            for _ in 0..<Self.cardsPerStream { if let card = cards.popFirst() { entries.append(card) } }
+        }
+        return entries
+    }
+
+    var body: some View {
+        // Lazy, so each card asks for its like counts only when it comes into view.
+        LazyVStack(spacing: Layout.rowSpacing * 2) {
+            ForEach(entries) { entry in
+                switch entry {
+                case .stream(let channel): TwitchStreamRow(channel: channel)
+                case .video(let video): VideoButton(video: video)
+                case .shorts(let shorts):
+                    // The shelf brings its own side margins.
+                    ShortsShelf(title: "Shorts", videos: shorts).padding(.horizontal, -Layout.screenPadding)
+                }
+            }
+        }
     }
 }
 
@@ -1651,28 +2005,28 @@ private struct ShortCard: View {
     /// Medium in a shelf; nil fills a column of the grid, the big size.
     var width: CGFloat? = Layout.shortMedium
     static let coverPixels = 500
-    static let avatarSize: CGFloat = 44
-    static let fadeHeight: CGFloat = 64
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Thumbnail(url: video.thumbnailURL, videoId: video.videoId, isShort: true, aspect: Layout.shortAspect, maxPixels: Self.coverPixels)
-                .fadesAtBottom()
-                .deArrowMark(video.videoId, size: 18)
+                .overlay(alignment: .bottomLeading) { CoverTitle(video: video, font: .caption.weight(.semibold)) }
+                .deArrowMark(video.videoId, size: 26)
                 .clipShape(.rect(cornerRadius: Layout.tileRadius))
+                .notched()
                 .videoZoomSource(video.videoId)
-            HStack(spacing: Layout.chipSpacing) {
-                Avatar(url: avatar ?? video.channelAvatarURL, size: Self.avatarSize)
-                    .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2.5))
-                VideoTitle(video: video)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Spacer(minLength: 0)
+                .notchAvatar { Avatar(url: avatar ?? video.channelAvatarURL, size: CoverNotch.size) }
+            VStack(alignment: .leading, spacing: 0) {
+                if let channel = video.channelTitle {
+                    Text(channel).font(.caption.weight(.semibold)).lineLimit(1)
+                }
+                if let views = video.viewCountText {
+                    Text(views).font(.caption).lineLimit(1)
+                }
             }
-            .frame(minHeight: Self.avatarSize)
-            .padding(.horizontal, Layout.rowPadding)
-            .padding(.top, -Self.avatarSize / 2)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: CoverNotch.radius, alignment: .topLeading)
+            .padding(.leading, CoverNotch.textInset)
+            .padding(.top, Layout.cardSpacing)
         }
         .frame(width: width)
         .contentShape(.rect)
@@ -1683,23 +2037,12 @@ private struct ShortCard: View {
 }
 
 private extension View {
-    /// See-through at the bottom edge, so it blends into any background, such as the player's.
     /// The rounded card of a Home section, with the space around it.
     func homeCardBackground() -> some View {
         background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 18, style: .continuous))
             .padding(.horizontal, Layout.screenPadding)
             .padding(.top, Layout.contentTopGap)
             .padding(.bottom, Layout.sectionGap)
-    }
-
-    func fadesAtBottom() -> some View {
-        mask {
-            VStack(spacing: 0) {
-                Color.black
-                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: ShortCard.fadeHeight)
-            }
-        }
     }
 }
 
@@ -1708,7 +2051,7 @@ private struct NewVideosCard: View {
     let videos: [YouTubeVideo]
 
     var body: some View {
-        NewVideosFrame(subtitle: "\(videos.count) new from your subscriptions") {
+        NewVideosFrame {
             ForEach(videos, id: \.videoId) { NewVideoRibbon(video: $0) }
         }
     }
@@ -1716,7 +2059,6 @@ private struct NewVideosCard: View {
 
 /// The card and its sideways row, shared with the loading shape.
 private struct NewVideosFrame<Cards: View>: View {
-    let subtitle: String?
     @ViewBuilder let cards: () -> Cards
 
     private static var radius: CGFloat { 22 }
@@ -1724,15 +2066,9 @@ private struct NewVideosFrame<Cards: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Layout.rowSpacing) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("New Videos").font(.title3.bold())
-                if let subtitle {
-                    Text(subtitle).font(.footnote).foregroundStyle(.secondary)
-                } else {
-                    LoadingLine(height: 12, shortBy: 120)
-                }
-            }
-            .padding(.horizontal, Layout.rowSpacing + 2)
+            Text("New Videos")
+                .font(.title3.bold())
+                .padding(.horizontal, Layout.rowSpacing + 2)
             ScrollView(.horizontal) {
                 LazyHStack(spacing: Self.cardGap) { cards() }
                     .scrollTargetLayout()
@@ -1755,7 +2091,7 @@ private struct NewVideosFrame<Cards: View>: View {
 /// The shape of `NewVideosCard` while the page loads.
 private struct LoadingNewVideos: View {
     var body: some View {
-        NewVideosFrame(subtitle: nil) {
+        NewVideosFrame {
             ForEach(0..<3, id: \.self) { _ in
                 ShimmerFill(radius: NewVideoRibbon.radius)
                     .frame(width: NewVideoRibbon.size.width, height: NewVideoRibbon.size.height)
@@ -1768,19 +2104,22 @@ private struct LoadingNewVideos: View {
     }
 }
 
-/// Woof Music's new release card in the colour of the video's own cover:
-/// the cover on top, then when, title and channel, with Watch Later and Play at the bottom.
+/// A new video in the colour of its own cover: the cover with a margin all round and the
+/// channel's picture in its notch, the title on the colour under it, then Play and Watch Later.
 private struct NewVideoRibbon: View {
     let video: YouTubeVideo
     @Environment(Router.self) private var router
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var settings: AppSettings
     @State private var tint: Color?
     @State private var isSaved = false
     @State private var saveTaps = 0
 
-    static let size = CGSize(width: Layout.videoMedium, height: 255)
+    static let size = CGSize(width: 200, height: 262)
     static let radius: CGFloat = 18
-    private static let buttonSize: CGFloat = 38
+    /// The colour around the cover, so the cover's corners follow the card's.
+    static let margin = Layout.chipSpacing
+    private static let laterSize: CGFloat = 36
     private static let fallback = Color(white: 0.22)
 
     private var top: Color { (tint ?? Self.fallback).mix(with: .black, by: 0.1) }
@@ -1790,56 +2129,51 @@ private struct NewVideoRibbon: View {
         VStack(alignment: .leading, spacing: 0) {
             VideoCover(video: video, maxPixels: 450)
                 .downloadBadge(video.videoId)
-                .frame(width: Self.size.width, height: Self.size.width / Layout.videoAspect)
-                .deArrowMark(video.videoId, size: 18)
-                .clipped()
+                .frame(width: Self.size.width - Self.margin * 2, height: (Self.size.width - Self.margin * 2) / Layout.videoAspect)
+                .deArrowMark(video.videoId, size: 26)
+                .clipShape(.rect(cornerRadius: Self.radius - Self.margin, style: .continuous))
+                .notched(isOn: video.channelAvatarURL != nil)
                 .videoZoomSource(video.videoId)
-            VStack(alignment: .leading, spacing: 2) {
-                if let when = video.publishedTimeText {
-                    Text(when)
-                        .font(.caption2.weight(.semibold))
-                        .opacity(0.75)
-                }
-                VideoTitle(video: video)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                if let channel = video.channelTitle {
-                    Text(channel)
-                        .font(.caption)
-                        .opacity(0.75)
-                        .lineLimit(1)
-                }
-            }
-            .padding([.horizontal, .top], Layout.rowSpacing)
+                .notchAvatar { avatar }
+                .zIndex(1)
+            Text(facts)
+                .font(.caption)
+                .opacity(0.8)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: CoverNotch.radius, alignment: .topLeading)
+                .padding(.leading, video.channelAvatarURL != nil ? CoverNotch.textInset : Layout.cardSpacing)
+                .padding(.top, Layout.cardSpacing)
+            VideoTitle(video: video)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .multilineTextAlignment(.leading)
+                .padding(.horizontal, Layout.cardSpacing)
+                .padding(.top, Layout.cardSpacing)
             Spacer(minLength: Layout.chipSpacing)
+            // Both on the right, where the thumb lands: Watch Later just before Play.
             HStack(spacing: Layout.chipSpacing) {
                 Spacer(minLength: 0)
                 Button(action: toggleWatchLater) {
                     ClockGlyph(isSaved: isSaved, trigger: saveTaps)
-                        .frame(width: Self.buttonSize, height: Self.buttonSize)
+                        .frame(width: Self.laterSize, height: Self.laterSize)
                         .background(.white.opacity(0.18), in: .circle)
                         .frame(width: 44, height: 44)
                         .contentShape(.circle)
                 }
                 .accessibilityLabel(isSaved ? "Remove from Watch Later" : "Save to Watch Later")
+                .sensoryFeedback(.success, trigger: isSaved) { _, saved in saved }
                 Button {
                     SeenVideos.mark(video.videoId)
                     router.play(video, expand: false)
                 } label: {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .frame(width: Self.buttonSize, height: Self.buttonSize)
-                        .background(.tint, in: .circle)
-                        .frame(width: 44, height: 44)
-                        .contentShape(.circle)
+                    HeaderRoundIcon(systemImage: "play.fill", primary: settings.accentColor)
                 }
                 .accessibilityLabel("Play \(video.title)")
             }
             .buttonStyle(ZoomPressStyle(scale: 0.92))
-            .padding(.horizontal, Layout.rowPadding)
-            .padding(.bottom, Layout.rowPadding)
         }
+        .padding([.horizontal, .top], Self.margin)
+        .padding(.bottom, Self.margin)
         .foregroundStyle(.white)
         // The card is always dark, so the clock's outline reads white in light mode too.
         .environment(\.colorScheme, .dark)
@@ -1863,6 +2197,32 @@ private struct NewVideoRibbon: View {
         .videoMenu(video, background: nil)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: tint)
         .task { tint = await CoverTint.color(of: video.cover) }
+    }
+
+    /// Channel · when, beside the picture.
+    private var facts: AttributedString {
+        var line = AttributedString(video.channelTitle ?? "")
+        line.font = .caption.weight(.semibold)
+        if let when = video.publishedTimeText {
+            line += AttributedString(line.characters.isEmpty ? when : " · " + when)
+        }
+        return line
+    }
+
+    @ViewBuilder private var avatar: some View {
+        if let url = video.channelAvatarURL {
+            if let id = video.channelId {
+                Button {
+                    router.openChannel(id)
+                } label: {
+                    Avatar(url: url, size: CoverNotch.size)
+                }
+                .buttonStyle(ZoomPressStyle())
+                .accessibilityLabel("Open \(video.channelTitle ?? "Channel")")
+            } else {
+                Avatar(url: url, size: CoverNotch.size)
+            }
+        }
     }
 
     private func toggleWatchLater() {
@@ -2139,6 +2499,21 @@ struct AvatarStack: View {
 struct ChannelRow: View {
     let channel: YouTubeChannel
     var avatarSize = Layout.avatarSmall
+    /// The Library's rows say what a channel is about instead of its subscribers.
+    var showsGenre = false
+    @State private var genre: String?
+
+    init(channel: YouTubeChannel, avatarSize: CGFloat = Layout.avatarSmall, showsGenre: Bool = false) {
+        self.channel = channel
+        self.avatarSize = avatarSize
+        self.showsGenre = showsGenre
+        // The saved genre shows from the first frame, so the subtitle doesn't change as the Library opens.
+        _genre = State(initialValue: showsGenre ? channel.channelId.flatMap(ChannelGenres.cached) : nil)
+    }
+
+    private var subtitle: String? {
+        showsGenre ? genre ?? channel.subscriberCountText : channel.subscriberCountText
+    }
 
     var body: some View {
         HStack(spacing: Layout.menuRowSpacing) {
@@ -2149,14 +2524,45 @@ struct ChannelRow: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                if let subscribers = channel.subscriberCountText {
-                    Text(subscribers)
+                if let subtitle {
+                    Text(subtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
         }
+        .task(id: showsGenre ? channel.channelId : nil) {
+            guard showsGenre, let id = channel.channelId, ChannelGenres.cached(id) == nil else { return }
+            // Waits a moment, so rows scrolled past don't ask.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            genre = await ChannelGenres.genre(of: id)
+        }
+    }
+}
+
+/// A channel's genre: the category YouTube files its latest upload under. Kept on the phone, since it rarely changes.
+@MainActor
+enum ChannelGenres {
+    private static let key = "channelGenres"
+    private static var stored: [String: String] { UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:] }
+
+    static func cached(_ channelId: String) -> String? { stored[channelId] }
+
+    static func genre(of channelId: String) async -> String? {
+        if let known = cached(channelId) { return known }
+        // A channel's uploads playlist is its ID with UU in place of UC.
+        guard channelId.hasPrefix("UC"),
+              let json = try? await FeedSource.browse(YouTubeFeeds.playlistBrowseId("UU" + channelId.dropFirst(2))).fetch() else { return nil }
+        let videos = await offMain { YouTubeFeedParser.videos(in: json) }
+        guard let latest = videos.first,
+              let player = try? await YouTubeAPI.post("player", body: ["videoId": latest.videoId]),
+              let category = JSON.string("category", in: player["microformat"]) else { return nil }
+        var all = stored
+        all[channelId] = category
+        UserDefaults.standard.set(all, forKey: key)
+        return category
     }
 }
 

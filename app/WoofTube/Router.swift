@@ -14,6 +14,11 @@ struct ChannelPageRoute: Hashable, Identifiable {
     let tab: AppTab
 }
 
+struct HashtagRoute: Identifiable {
+    let tag: String
+    var id: String { tag }
+}
+
 struct ShortsRoute: Identifiable {
     let model: ShortsModel
     var id: ObjectIdentifier { ObjectIdentifier(model) }
@@ -53,9 +58,10 @@ final class Router {
     @ObservationIgnored private var shortCheck: Task<Void, Never>?
     /// YouTube's longest Short, in seconds. Anything longer opens without asking.
     private static let longestShort = 180
-    var selectedTab = AppTab.home
+    var selectedTab = AppSettings.savedStartTab
     /// The open Shorts page. With `shortsModel` set and this nil, the Short is in the floating card.
     var shortsRoute: ShortsRoute?
+    var hashtagRoute: HashtagRoute?
     private(set) var shortsModel: ShortsModel?
     /// Like `isWatchPageOnScreen`, for the Shorts player's layer.
     var isShortsPageOnScreen = false {
@@ -90,9 +96,17 @@ final class Router {
     var usesSponsorBlock: Bool {
         didSet { UserDefaults.standard.set(usesSponsorBlock, forKey: Self.usesSponsorBlockKey) }
     }
+    /// Evens out loud and quiet videos, and quiet and loud moments inside one.
+    var stableVolume: Bool {
+        didSet {
+            UserDefaults.standard.set(stableVolume, forKey: Self.stableVolumeKey)
+            applyStableVolume()
+        }
+    }
     private(set) var audioTracks: [AudioTrack] = []
     private(set) var selectedAudioTrack: String?
     private(set) var storyboard: Storyboard?
+    private(set) var endScreen: [EndScreenElement] = []
     /// The details request failed, as it does for a download with no connection.
     private(set) var detailsUnavailable = false
 
@@ -104,6 +118,8 @@ final class Router {
     @ObservationIgnored private(set) lazy var shortsPlayer: MpvPlayer = {
         let player = MpvPlayer()
         player.setProperty("loop-file", "inf")
+        player.setProperty("af", stableVolume ? Self.stableVolumeFilter : "")
+        didCreateShortsPlayer = true
         return player
     }()
     @ObservationIgnored private(set) lazy var sleepTimer = SleepTimer { [weak self] in self?.player.setPaused(true) }
@@ -118,20 +134,28 @@ final class Router {
     private static let handoffUntouched = 15.0
     private static let pictureInPictureKey = "allowsPictureInPicture"
     private static let usesSponsorBlockKey = "skipsSponsors"
+    private static let stableVolumeKey = "stableVolume"
+    /// ffmpeg's dynamic normaliser: it reads a few seconds ahead and raises or lowers the sound gradually,
+    /// up to 10 times louder, so speech never jumps.
+    private static let stableVolumeFilter = "lavfi=[dynaudnorm=f=250:g=31:m=10]"
     private static let captionLanguageKey = "captionLanguage"
     private var loadTask: Task<Void, Never>?
     private var didCreateShortsWindow = false
+    /// Reading `shortsPlayer` creates it, so settings check this first.
+    @ObservationIgnored private var didCreateShortsPlayer = false
     private var wasInBackground = false
     private var watchReporter: WatchReporter?
     private(set) var isLive = false {
         didSet { player.isLiveStream = isLive }
     }
     private(set) var liveChatToken: String?
+    /// The local playlist server of the Twitch stream playing, which also says when an ad is on.
+    private(set) var twitchStream: TwitchStream?
     private var nowPlayingSubscriptions: [Any] = []
     private(set) var sponsorSegments: [SponsorSegment] = []
     /// The segment playing now whose setting is to show a button.
     private(set) var offeredSegment: SponsorSegment?
-    private var skippedSegments: Set<String> = []
+    private(set) var skippedSegments: Set<String> = []
     private var currentStream: LoadedStream?
     private var playlistModel: FeedModel?
     /// What the current video was started from, for downloading its neighbours.
@@ -149,8 +173,16 @@ final class Router {
         autoplay = defaults.object(forKey: Self.autoplayKey) as? Bool ?? true
         allowsPictureInPicture = defaults.object(forKey: Self.pictureInPictureKey) as? Bool ?? true
         usesSponsorBlock = defaults.bool(forKey: Self.usesSponsorBlockKey)
+        stableVolume = defaults.bool(forKey: Self.stableVolumeKey)
+        applyStableVolume()
         setUpRemoteCommands()
         player.onEnded = { [weak self] in self?.playNextAfterEnd() }
+    }
+
+    private func applyStableVolume() {
+        let filter = stableVolume ? Self.stableVolumeFilter : ""
+        player.setProperty("af", filter)
+        if didCreateShortsPlayer { shortsPlayer.setProperty("af", filter) }
     }
 
     /// For a tap on a video. History and other lists can show a Short as a normal video, so YouTube is asked first.
@@ -171,7 +203,8 @@ final class Router {
         }
     }
 
-    func play(_ video: YouTubeVideo, expand: Bool = true) {
+    /// `time` starts it somewhere else than where it was left, as a clip does.
+    func play(_ video: YouTubeVideo, expand: Bool = true, at time: Double? = nil) {
         shortCheck?.cancel()
         if video.isShort {
             openShorts([video], start: video)
@@ -180,6 +213,7 @@ final class Router {
         // The video already playing only comes back into view, unless it failed or finished.
         if video.videoId == current?.videoId, loadError == nil, !player.hasEnded {
             channelRoute = nil
+            hashtagRoute = nil
             if expand {
                 if !isExpanded { zoomSource = video.videoId }
                 isExpanded = true
@@ -187,11 +221,15 @@ final class Router {
             return
         }
         closeShorts()
-        SeenVideos.mark(video.videoId)
-        WatchedChannels.mark(video.channelId)
+        let isTwitch = video.isTwitch
+        if !isTwitch {
+            SeenVideos.mark(video.videoId)
+            WatchedChannels.mark(video.channelId)
+        }
         current = video
         liveChatToken = nil
         channelRoute = nil
+        hashtagRoute = nil
         if expand {
             if !isExpanded { zoomSource = video.videoId }
             isExpanded = true
@@ -202,6 +240,7 @@ final class Router {
         audioTracks = []
         selectedAudioTrack = nil
         storyboard = nil
+        endScreen = []
         selectedCaption = nil
         captionCues = []
         sponsorSegments = []
@@ -211,8 +250,10 @@ final class Router {
         player.prepareForNewVideo()
         // The frame taken above belongs to the previous video.
         stillFrame = nil
-        startStream(videoId: video.videoId, start: WatchPositions.start(for: video), isNewPlayback: true)
+        startStream(videoId: video.videoId, start: time ?? WatchPositions.start(for: video), isNewPlayback: true)
         player.isLiveStream = video.isLive
+        // Twitch has no YouTube details, comments or SponsorBlock segments.
+        guard !isTwitch else { return }
         Task { await loadDetails(videoId: video.videoId) }
         if usesSponsorBlock, !SearchSettings.isIncognito {
             Task {
@@ -266,11 +307,13 @@ final class Router {
     func openShorts(_ videos: [YouTubeVideo], start: YouTubeVideo) {
         if shortsModel?.currentId == start.videoId {
             channelRoute = nil
+            hashtagRoute = nil
             if shortsRoute == nil { expandShorts() }
             return
         }
         close()
         channelRoute = nil
+        hashtagRoute = nil
         let model = ShortsModel(shorts: videos, startId: start.videoId, player: shortsPlayer)
         shortsModel = model
         zoomSource = start.videoId
@@ -398,13 +441,15 @@ final class Router {
         }
     }
 
-    /// A time in this video seeks, other YouTube links open here, and the rest go to Safari.
-    func openDescriptionLink(_ url: URL) -> OpenURLAction.Result {
+    /// A time in this video seeks and plays, other YouTube links open here, and the rest go to Safari.
+    func openDescriptionLink(_ url: URL, onSeek: () -> Void = {}) -> OpenURLAction.Result {
         guard let link = YouTubeLink(url: url) else { return .systemAction }
         if case .video(let id) = link, id == current?.videoId,
            let time = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "t" })?.value,
            let seconds = Double(time.trimmingCharacters(in: CharacterSet(charactersIn: "s"))) {
             player.seek(to: seconds)
+            player.setPaused(false)
+            onSeek()
         } else {
             open(link)
         }
@@ -413,7 +458,7 @@ final class Router {
 
     /// The phone pauses, so the sound doesn't play twice.
     func playOnTV() {
-        guard let videoId = current?.videoId else { return }
+        guard let videoId = current?.videoId, current?.isTwitch == false else { return }
         let time = player.time
         run {
             try await TVLink.shared.play(videoId: videoId, at: time)
@@ -434,11 +479,20 @@ final class Router {
                 let id = try await YouTubeAPI.channelId(at: path)
                 self.openChannelPage(id)
             }
+        case .hashtag(let tag):
+            channelRoute = nil
+            hashtagRoute = HashtagRoute(tag: tag)
+        case .clip(let id):
+            run {
+                let clip = try await YouTubeAPI.clip(id)
+                self.play(YouTubeVideo(videoId: clip.videoId, title: ""), at: clip.start)
+            }
         }
     }
 
     /// A sheet, for a channel among many, as on the Home feed.
     func openChannel(_ channelId: String) {
+        hashtagRoute = nil
         channelRoute = ChannelRoute(id: channelId)
     }
 
@@ -446,6 +500,7 @@ final class Router {
     /// The video carries on in the floating card.
     func openChannelPage(_ channelId: String) {
         channelRoute = nil
+        hashtagRoute = nil
         isExpanded = false
         shortsRoute = nil
         channelPage = ChannelPageRoute(id: channelId, tab: selectedTab)
@@ -483,6 +538,8 @@ final class Router {
         isExpanded = false
         watchReporter?.finish()
         watchReporter = nil
+        twitchStream?.stop()
+        twitchStream = nil
         player.stop()
         sleepTimer.cancel()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -536,7 +593,7 @@ final class Router {
 
     /// Saves the position and handles SponsorBlock's segments as playback advances.
     private func playbackTick(_ time: Double) {
-        guard let current, player.duration > 0 else { return }
+        guard let current, current.twitchLogin == nil, player.duration > 0 else { return }
         WatchPositions.save(videoId: current.videoId, time: time, duration: player.duration)
         watchReporter?.tick(time)
         let active = usesSponsorBlock ? sponsorSegments.filter { $0.range.contains(time) && !skippedSegments.contains($0.id) } : []
@@ -595,6 +652,20 @@ final class Router {
         isMembersOnly = false
         captions = []
         isLive = false
+        twitchStream?.stop()
+        twitchStream = nil
+        if let login = Twitch.login(inVideoId: videoId) {
+            watchReporter?.finish()
+            watchReporter = nil
+            startTwitch(login)
+            return
+        }
+        if Twitch.isTwitch(videoId) {
+            watchReporter?.finish()
+            watchReporter = nil
+            startTwitchMedia(videoId: videoId, start: start)
+            return
+        }
         if isNewPlayback {
             watchReporter?.finish()
             watchReporter = WatchReporter(videoId: videoId)
@@ -627,6 +698,11 @@ final class Router {
                 updateNowPlaying()
                 await loadMissingCaptions(videoId: videoId)
                 guard !Task.isCancelled else { return }
+                if isNewPlayback, !stream.isLive {
+                    let cards = await EndScreenElement.load(videoId: videoId)
+                    guard !Task.isCancelled else { return }
+                    endScreen = cards
+                }
                 if let client = stream.client {
                     let extras = await StreamLoader.extras(videoId: videoId, client: client)
                     guard !Task.isCancelled else { return }
@@ -644,6 +720,44 @@ final class Router {
                 let membersOnly = await YouTubeAPI.isMembersOnly(videoId: videoId)
                 guard !Task.isCancelled else { return }
                 isMembersOnly = membersOnly
+                loadError = error.localizedDescription
+            }
+        }
+    }
+
+    /// A Twitch past broadcast or clip: played straight from Twitch, and sought like a video.
+    private func startTwitchMedia(videoId: String, start: Double) {
+        isLive = false
+        streamSummary = "Twitch"
+        loadTask = Task {
+            do {
+                guard let url = try await Twitch.mediaURL(videoId: videoId, maxHeight: maxHeight) else { return }
+                guard !Task.isCancelled else { return }
+                player.load(url: url.absoluteString, start: start)
+                updateNowPlaying()
+            } catch {
+                guard !Task.isCancelled else { return }
+                loadError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Twitch's playlist goes through a local server that takes the ads out. A pre-roll is waited out before mpv starts.
+    private func startTwitch(_ login: String) {
+        isLive = true
+        streamSummary = "Twitch · ads removed"
+        loadTask = Task {
+            do {
+                let url = try await Twitch.playlistURL(channel: login, maxHeight: maxHeight)
+                guard !Task.isCancelled else { return }
+                let stream = try TwitchStream(upstream: url)
+                twitchStream = stream
+                let address = try await stream.start()
+                guard !Task.isCancelled else { return }
+                player.load(url: address)
+                updateNowPlaying()
+            } catch {
+                guard !Task.isCancelled else { return }
                 loadError = error.localizedDescription
             }
         }
@@ -745,7 +859,8 @@ extension CommentsPage {
     /// YouTube sorts comments by relevance first, so this is the one it would show.
     static func topComment(token: String?) async -> Comment? {
         guard let token, let json = try? await InnerTubeClient.wooftube.next(continuation: token) else { return nil }
-        return CommentsPage(json: json).comments.first
+        guard let item = CommentsParser.parseCommentsPage(json).items.first else { return nil }
+        return Comment(item, extras: CommentExtras.all(in: json)[item.id])
     }
 }
 

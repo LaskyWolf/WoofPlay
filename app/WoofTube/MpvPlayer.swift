@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreImage
 import MPVKit
+import Network
 import SwiftUI
 
 /// mpv's option order comes from Woof Music's PlayerController.
@@ -21,6 +22,10 @@ final class MpvPlayer: ObservableObject {
     @Published private(set) var errorText: String?
     /// A live stream can't be sought: mpv never reports that such a seek finished.
     @Published var isLiveStream = false
+    /// How far a live stream has fallen behind since it started: the wall-clock time gone by
+    /// minus the stream time played. Pauses and stalls add to it; Go Live sets it back to 0.
+    @Published private(set) var liveDelay: Double = 0
+    private var liveStart: (wall: Date, position: Double)?
     /// The length the feed gave, for the floating window until mpv knows it.
     var expectedDuration = 0.0
     private(set) var recentLog: [String] = []
@@ -59,13 +64,26 @@ final class MpvPlayer: ObservableObject {
     private static let maxResyncs = 3
     private var smoothnessTimer: DispatchSourceTimer?
 
+    /// How far ahead mpv downloads. On cellular or a hotspot it stops sooner,
+    /// so a video skipped after a few seconds hasn't cost two minutes of data.
+    private static let buffer = (seconds: "120", bytes: "200M")
+    private static let meteredBuffer = (seconds: "30", bytes: "50M")
+    private static let network: NWPathMonitor = {
+        let monitor = NWPathMonitor()
+        monitor.start(queue: DispatchQueue(label: "player.network"))
+        return monitor
+    }()
+
     init() {
+        _ = Self.network
         observeAudioSession()
         queue.async { [weak self] in self?.startMpv() }
     }
 
     func load(url: String, start: Double = 0) {
         loadedURL = url
+        liveStart = nil
+        liveDelay = 0
         hasEnded = false
         loadStarted = Date()
         errorText = nil
@@ -78,6 +96,10 @@ final class MpvPlayer: ObservableObject {
             activateAudioSession()
             guard let mpv else { return }
             mpv_set_property_string(mpv, "pause", "no")
+            // Read per video: a change of network mid-video applies from the next one.
+            let buffer = Self.network.currentPath.isExpensive ? Self.meteredBuffer : Self.buffer
+            mpv_set_property_string(mpv, "cache-secs", buffer.seconds)
+            mpv_set_property_string(mpv, "demuxer-max-bytes", buffer.bytes)
             let arguments = start > 0
                 ? ["loadfile", url, "replace", "-1", "start=\(start)"]
                 : ["loadfile", url, "replace"]
@@ -143,6 +165,28 @@ final class MpvPlayer: ObservableObject {
         seek(to: min(max(time + seconds, 0), duration))
     }
 
+    /// Opens the stream again, which starts at its newest moment.
+    func goLive() {
+        guard isLiveStream, let loadedURL else { return }
+        load(url: loadedURL)
+    }
+
+    /// Runs on the main thread with each new position.
+    fileprivate func measureLiveDelay(at position: Double) {
+        guard isLiveStream else { return }
+        let raw = liveStart.map { Date().timeIntervalSince($0.wall) - (position - $0.position) }
+        // No start yet, or the position jumped ahead of the clock as a new stream began: measure from here.
+        // A second of slack, since positions arrive in quarter-second steps.
+        guard let raw, raw > -1 else {
+            liveStart = (Date(), position)
+            liveDelay = 0
+            return
+        }
+        let delay = max(raw, 0)
+        // Whole seconds, so the views showing it redraw once a second at most.
+        if delay.rounded() != liveDelay.rounded() { liveDelay = delay }
+    }
+
     func stop() {
         clock.time = 0
         duration = 0
@@ -200,8 +244,8 @@ final class MpvPlayer: ObservableObject {
         mpv_set_option_string(mpv, "hwdec-software-fallback", "yes")
         mpv_set_option_string(mpv, "audio-exclusive", "yes")
         mpv_set_option_string(mpv, "cache", "yes")
-        mpv_set_option_string(mpv, "cache-secs", "120")
-        mpv_set_option_string(mpv, "demuxer-max-bytes", "200M")
+        mpv_set_option_string(mpv, "cache-secs", Self.buffer.seconds)
+        mpv_set_option_string(mpv, "demuxer-max-bytes", Self.buffer.bytes)
 
         let status = mpv_initialize(mpv)
         guard status >= 0 else {
@@ -387,7 +431,10 @@ final class MpvPlayer: ObservableObject {
                         player?.publish { $0.duration = value }
                     } else if Int(value * ticksPerSecond) != lastTick {
                         lastTick = Int(value * ticksPerSecond)
-                        player?.publish { $0.clock.time = value }
+                        player?.publish {
+                            $0.clock.time = value
+                            $0.measureLiveDelay(at: value)
+                        }
                     }
                 }
             case MPV_EVENT_END_FILE:

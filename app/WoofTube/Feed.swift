@@ -63,6 +63,8 @@ struct VideoExtras {
     /// Identifies the video's entry in a playlist, which removing it needs.
     var setVideoId: String?
     var isMembersOnly = false
+    /// A Twitch stream from a channel you don't follow, whose LIVE badge looks different.
+    var isSuggestedStream = false
 }
 
 struct PollChoice {

@@ -53,7 +53,9 @@ struct HeaderRoundIcon: View {
     var motion: GlyphScript?
     var trigger: AnyHashable = 0
 
-    private var size: CGFloat { primary == nil ? 38 : 50 }
+    /// The main action, such as Play, is a size up from the others.
+    static let primarySize: CGFloat = 50
+    private var size: CGFloat { primary == nil ? 38 : Self.primarySize }
 
     var body: some View {
         Image(systemName: systemImage)
@@ -501,5 +503,26 @@ struct ShimmerBlock: View {
 
     var body: some View {
         ShimmerFill(radius: radius).frame(width: width, height: height)
+    }
+}
+
+/// Pull to refresh with a light tap once the new content is in.
+private struct TappingRefresh: ViewModifier {
+    let action: () async -> Void
+    @State private var refreshes = 0
+
+    func body(content: Content) -> some View {
+        content
+            .refreshable {
+                await action()
+                refreshes += 1
+            }
+            .sensoryFeedback(.impact(weight: .light), trigger: refreshes)
+    }
+}
+
+extension View {
+    func tappingRefresh(_ action: @escaping () async -> Void) -> some View {
+        modifier(TappingRefresh(action: action))
     }
 }

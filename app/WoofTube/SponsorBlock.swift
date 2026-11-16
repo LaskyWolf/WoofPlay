@@ -167,6 +167,8 @@ struct SponsorSkipButton: View {
         .padding(.bottom, Self.barClearance)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .animation(.easeInOut(duration: 0.2), value: router.offeredSegment)
+        // Felt when a segment is skipped, by hand or on its own, so the jump isn't a surprise.
+        .sensoryFeedback(.impact(weight: .light), trigger: router.skippedSegments.count) { old, new in new > old }
     }
 }
 

@@ -7,6 +7,9 @@ enum YouTubeLink: Equatable {
     case channel(String)
     /// An @handle, /c/ or /user/ path, which only YouTube can turn into a channel.
     case channelPath(String)
+    case hashtag(String)
+    /// A clip's id, which only YouTube can turn into a video and a time.
+    case clip(String)
 
     private static let webHosts: Set<String> = [
         "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
@@ -51,6 +54,12 @@ enum YouTubeLink: Equatable {
         case "c", "user":
             guard let second else { return nil }
             return .channelPath("/\(first)/\(second)")
+        case "hashtag":
+            guard let second, !second.isEmpty else { return nil }
+            return .hashtag(second)
+        case "clip":
+            guard let second, second.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else { return nil }
+            return .clip(second)
         default:
             if first.hasPrefix("@"), first.count > 1 { return .channelPath("/\(first)") }
             return isAppScheme ? videoLink(first) : nil
@@ -89,6 +98,8 @@ enum YouTubeLink: Equatable {
         assert(YouTubeLink(text: "https://www.youtube.com/channel/UCabc") == .channel("UCabc"))
         assert(YouTubeLink(text: "https://www.youtube.com/@LinusTechTips/videos") == .channelPath("/@LinusTechTips"))
         assert(YouTubeLink(text: "https://www.youtube.com/c/Linus") == .channelPath("/c/Linus"))
+        assert(YouTubeLink(text: "https://www.youtube.com/hashtag/minecraft") == .hashtag("minecraft"))
+        assert(YouTubeLink(text: "https://youtube.com/clip/UgkxAbC-12_x?si=a") == .clip("UgkxAbC-12_x"))
         for text in [
             "cat", "how to cook", "LTT", "@LinusTechTips", "https://example.com/watch?v=\(id)", "https://www.youtube.com/watch?v=short",
             "https://www.youtube.com/playlist?list=PL1", "https://www.youtube.com/", "youtube://", "https://notyoutube.com/@a"

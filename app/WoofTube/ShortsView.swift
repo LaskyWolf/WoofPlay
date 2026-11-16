@@ -472,7 +472,7 @@ struct ShortsView: View {
                     .contentTransition(.symbolEffect(.replace))
             }
             .animation(reduceMotion ? nil : .snappy, value: isSubscribed)
-            .accessibilityLabel(isSubscribed ? "Unsubscribe" : "Subscribe")
+            .accessibilityLabel(isSubscribed ? "Unfollow" : "Follow")
             .sensoryFeedback(.selection, trigger: isSubscribed)
         }
         .buttonStyle(PlayerPressStyle())

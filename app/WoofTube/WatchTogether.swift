@@ -453,8 +453,9 @@ final class WatchTogether {
     }
 
     /// True while the player shows the video it should, ready and not waiting for data.
+    /// A live stream has no duration; every phone plays its live edge and only play and pause are shared.
     private func isSteady(_ player: MpvPlayer) -> Bool {
-        player.isVideoReady && !player.isBuffering && player.duration > 0
+        player.isVideoReady && !player.isBuffering && (player.duration > 0 || player.isLiveStream)
     }
 
     private func sendPing() {
@@ -531,7 +532,7 @@ final class WatchTogether {
         if isPlaying != sentPlaying {
             sendTransport(isPlaying ? .play : .pause, trackId: video.videoId, position: position)
             sentPlaying = isPlaying
-        } else if let last = lastPosition {
+        } else if !player.isLiveStream, let last = lastPosition {
             let expected = last.seconds + (isPlaying ? Date().timeIntervalSince(last.at) * player.speed : 0)
             if abs(position - expected) > Self.seekThreshold {
                 sendTransport(.seek, trackId: video.videoId, position: position)
@@ -609,6 +610,8 @@ final class WatchTogether {
         Task {
             for _ in 0..<Self.loadPolls {
                 guard awaitingBuffer?.trackId == track.id else { return }
+                // A live stream keeps playing at its live edge.
+                if player.isLiveStream { return }
                 if player.duration > 0 {
                     player.setPaused(true)
                     return
@@ -620,7 +623,7 @@ final class WatchTogether {
 
     private func guestTick() {
         guard let router, let waiting = awaitingBuffer, router.current?.videoId == waiting.trackId,
-              !router.player.isBuffering, router.player.duration > 0 else { return }
+              isSteady(router.player) else { return }
         awaitingBuffer = nil
         connection?.send(LTMessage.bufferReady, LTBufferReady(trackId: waiting.trackId, trackRevision: waiting.revision))
     }

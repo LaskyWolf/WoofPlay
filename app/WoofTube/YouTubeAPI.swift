@@ -144,11 +144,26 @@ enum YouTubeAPI {
 
     /// Turns a path such as /@handle into the channel's id.
     static func channelId(at path: String) async throws -> String {
-        let json = try? await post("navigation/resolve_url", body: ["url": "https://www.youtube.com" + path])
-        guard let id = JSON.string("browseId", in: json?["endpoint"]), id.hasPrefix("UC") else {
+        let endpoint = try? await resolve(path)
+        guard let id = JSON.string("browseId", in: endpoint), id.hasPrefix("UC") else {
             throw YouTubeAPIError(errorDescription: "YouTube can't find this channel.")
         }
         return id
+    }
+
+    /// Where a youtube.com path leads, such as a browse page or a video.
+    static func resolve(_ path: String) async throws -> Any? {
+        try await post("navigation/resolve_url", body: ["url": "https://www.youtube.com" + path])["endpoint"]
+    }
+
+    /// A clip is a stretch of a video. Its page gives the video and where the stretch starts.
+    // ponytail: plays from the start of the clip to the end of the video; stopping at the clip's end needs its player config.
+    static func clip(_ id: String) async throws -> (videoId: String, start: Double?) {
+        let endpoint = try await resolve("/clip/" + id)
+        guard let videoId = JSON.string("videoId", in: endpoint) else {
+            throw YouTubeAPIError(errorDescription: "YouTube can't find this clip.")
+        }
+        return (videoId, (JSON.first("startTimeSeconds", in: endpoint) as? NSNumber)?.doubleValue)
     }
 
     /// Opens one of the addresses YouTube gives for reporting playback. These carry the sign-in,

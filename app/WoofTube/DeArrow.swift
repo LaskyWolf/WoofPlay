@@ -187,8 +187,9 @@ struct DeArrowMark: View {
     private static let middle = Color(red: 0x88 / 255, green: 0xC9 / 255, blue: 0xF9 / 255)
     private static let inner = Color(red: 0x0A / 255, green: 0x62 / 255, blue: 0xA5 / 255)
 
-    private var isShown: Bool {
-        guard isDeArrowOn, !OriginalCovers.shared.shows(videoId) else { return false }
+    /// DeArrow has a cover of its own for this video, whichever one shows.
+    private var hasCommunityCover: Bool {
+        guard isDeArrowOn, !Twitch.isTwitch(videoId), !OriginalCovers.shared.isMissing(videoId) else { return false }
         guard let branding = DeArrow.cached(videoId) else { return didAsk }
         return !branding.usesOwnCover
     }
@@ -196,21 +197,34 @@ struct DeArrowMark: View {
     var body: some View {
         // Something always draws here, because a task on nothing wouldn't start.
         Color.clear
-            .overlay(alignment: .bottomTrailing) {
-                if isShown {
-                    ZStack(alignment: .bottomTrailing) {
-                        CornerTriangle().fill(Self.outer).frame(width: size, height: size)
-                        CornerTriangle().fill(Self.middle).frame(width: size * 0.68, height: size * 0.68)
-                        CornerTriangle().fill(Self.inner).frame(width: size * 0.38, height: size * 0.38)
+            .overlay(alignment: .topLeading) {
+                if hasCommunityCover {
+                    let showsOriginal = OriginalCovers.shared.isChosen(videoId)
+                    Button {
+                        OriginalCovers.shared.toggle(videoId)
+                    } label: {
+                        // Outlined while the video's own cover shows, so a second tap brings DeArrow's back.
+                        ZStack(alignment: .topLeading) {
+                            if showsOriginal {
+                                CornerTriangle().fill(Color.black.opacity(0.45)).frame(width: size, height: size)
+                                CornerTriangle().stroke(Self.middle, lineWidth: 2).frame(width: size, height: size)
+                            } else {
+                                CornerTriangle().fill(Self.outer).frame(width: size, height: size)
+                                CornerTriangle().fill(Self.middle).frame(width: size * 0.68, height: size * 0.68)
+                                CornerTriangle().fill(Self.inner).frame(width: size * 0.38, height: size * 0.38)
+                            }
+                        }
+                        // 44 pt to tap, from the corner.
+                        .frame(width: max(size, 44), height: max(size, 44), alignment: .topLeading)
+                        .contentShape(.rect)
                     }
-                    .accessibilityElement()
-                    .accessibilityLabel("Community cover")
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(showsOriginal ? "Show Community Cover" : "Show Original Cover")
                 }
             }
-            .allowsHitTesting(false)
-            .task(id: isDeArrowOn ? videoId : "") {
+            .task(id: isDeArrowOn && !Twitch.isTwitch(videoId) ? videoId : "") {
                 didAsk = false
-                if isDeArrowOn { _ = await DeArrow.branding(of: videoId) }
+                if isDeArrowOn, !Twitch.isTwitch(videoId) { _ = await DeArrow.branding(of: videoId) }
                 didAsk = true
             }
     }
@@ -219,8 +233,8 @@ struct DeArrowMark: View {
 private struct CornerTriangle: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
         path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         path.closeSubpath()
         return path
@@ -229,7 +243,7 @@ private struct CornerTriangle: Shape {
 
 extension View {
     /// Goes after any fade on the cover, and before its corners are rounded.
-    func deArrowMark(_ videoId: String, size: CGFloat = 22) -> some View {
+    func deArrowMark(_ videoId: String, size: CGFloat = 34) -> some View {
         overlay { DeArrowMark(videoId: videoId, size: size) }
     }
 }
@@ -246,8 +260,11 @@ struct VideoCoverImage: View {
     private var own: String { url ?? YouTubeVideo.cover(of: videoId) }
 
     /// Waits for DeArrow's answer, so YouTube's picture isn't downloaded just to be replaced.
+    /// DeArrow only knows YouTube's videos.
+    private var usesDeArrow: Bool { isDeArrowOn && !Twitch.isTwitch(videoId) }
+
     private var shownURL: String? {
-        guard isDeArrowOn, !OriginalCovers.shared.shows(videoId) else { return own }
+        guard usesDeArrow, !OriginalCovers.shared.shows(videoId) else { return own }
         let frame = DeArrow.youTubeFrame(of: videoId, isShort: isShort)
         guard let branding = DeArrow.cached(videoId) else { return didAsk ? frame : nil }
         if branding.usesOwnCover { return own }
@@ -256,9 +273,9 @@ struct VideoCoverImage: View {
 
     var body: some View {
         CachedImage(url: shownURL, maxPixels: maxPixels, onFailure: { OriginalCovers.shared.markMissing(videoId) })
-            .task(id: isDeArrowOn ? videoId : "") {
+            .task(id: usesDeArrow ? videoId : "") {
                 didAsk = false
-                if isDeArrowOn { _ = await DeArrow.branding(of: videoId) }
+                if usesDeArrow { _ = await DeArrow.branding(of: videoId) }
                 didAsk = true
             }
     }

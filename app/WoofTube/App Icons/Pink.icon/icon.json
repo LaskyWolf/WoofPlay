@@ -1,7 +1,21 @@
 {
   "fill": {
-    "solid": "srgb:0.00000,0.00000,0.00000,1.00000"
+    "automatic-gradient": "srgb:0.97000,0.97000,0.98000,1.00000"
   },
+  "fill-specializations": [
+    {
+      "appearance": "dark",
+      "value": {
+        "automatic-gradient": "srgb:0.09000,0.09000,0.11000,1.00000"
+      }
+    },
+    {
+      "appearance": "tinted",
+      "value": {
+        "solid": "gray:0.12000,1.00000"
+      }
+    }
+  ],
   "groups": [
     {
       "layers": [
@@ -9,6 +23,12 @@
           "glass": true,
           "hidden": false,
           "image-name": "Logo.svg",
+          "image-name-specializations": [
+            {
+              "appearance": "dark",
+              "value": "Logo-Dark.svg"
+            }
+          ],
           "name": "Play Button",
           "position": {
             "scale": 1,
@@ -19,10 +39,12 @@
           }
         }
       ],
+      "lighting": "combined",
       "shadow": {
         "kind": "neutral",
         "opacity": 0.5
       },
+      "specular": true,
       "translucency": {
         "enabled": true,
         "value": 0.5

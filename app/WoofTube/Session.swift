@@ -146,7 +146,7 @@ final class Session: ObservableObject {
         await InnerTubeClient.wooftube.updateAuth(auth)
     }
 
-    private func loadAccount() async {
+    func loadAccount() async {
         account = try? await InnerTubeClient.wooftube.accountInfo()
         rememberCurrentAccount()
     }
