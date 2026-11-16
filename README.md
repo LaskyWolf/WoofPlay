@@ -1,14 +1,13 @@
 <div align="center">
 
-<img src=".github/assets/banner.svg" width="100%" alt="WoofTube: YouTube, rebuilt natively for iPhone" />
+<img src=".github/assets/banner.svg" width="100%" alt="WoofTube: video streaming, built natively in Swift" />
 
 [![iOS 26+](https://img.shields.io/badge/iOS-26%2B-black?logo=apple)](#install)
 [![SwiftUI](https://img.shields.io/badge/Swift-SwiftUI-F05138?logo=swift&logoColor=white)](app/WoofTube)
 [![Player: mpv](https://img.shields.io/badge/player-mpv-691f69)](https://mpv.io)
 [![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 
-**A free, open source YouTube client for iPhone, written from scratch in SwiftUI.**
-It contains no YouTube code and shows no ads.
+**A free, open source video streaming app for iPhone, built from scratch in SwiftUI.**
 
 <img src=".github/assets/home.png" width="31%" alt="Explore" />&nbsp;
 <img src=".github/assets/player.png" width="31%" alt="Video page" />&nbsp;
@@ -22,76 +21,23 @@ It contains no YouTube code and shows no ads.
 
 | | |
 | --- | --- |
-| 🚫 **No ads** | The app plays the video streams directly, so there are no ad breaks or banners. |
+| 📺 **YouTube and Twitch** | YouTube videos and Twitch live streams in one app, with one player, one live chat and one Follow button. |
 | 🎧 **Background and Picture in Picture** | Audio keeps playing when you lock the phone, and the video can float over other apps. |
-| ⬇️ **Real downloads** | Videos download in the background and retry when YouTube's address expires. |
 | ⏭️ **SponsorBlock** | The seek bar marks sponsors and other segments from the community list, and each kind can skip, show a button or do nothing. Dislike counts come from Return YouTube Dislike. DeArrow can replace clickbait titles and thumbnails. All three are optional. |
 | 🧊 **Native iOS 26** | Liquid Glass buttons, zoom transitions, SF Symbols, system menus, tab bar and sheets. Dynamic Type, Dark Mode and Reduce Motion are respected. |
 
 ## Features
 
-### Explore and Following
-- Your own Explore feed, with filter chips and videos you have already seen moved out of the way
-- Jump Back In card: the latest unfinished video and the followed Twitch channels that are live
-- Filters stay at the top while you scroll, over a fade
-- New Videos row on Following: today's uploads as cards in the colour of their cover, with Watch Later and Play buttons
-- Shorts shelves (a two-column grid when a Shorts filter is on), community posts with polls, and playlists in the feed
-- LIVE, New and UPCOMING marks under the channel picture, and Like and Dislike buttons under each card
-- Long-press menus on videos: Watch Later, playlists, share, download and feedback
-
-### Twitch
-- Live streams, clips and past broadcasts in the same player as YouTube, without ads
-- Live chat shared with YouTube's, including Super Chats, Bits, subs and raids
-- Sign in with a device code and your own Twitch Client ID. Followed live channels appear in Jump Back In
-- Twitch results in search and Up Next, a Streams filter, and creator pages
-- One Follow button for YouTube and Twitch channels
-- Removing Twitch's ads breaks Twitch's Terms of Service
-
-### Player
-- mpv engine with up to the quality you choose
-- Playback speed, captions, audio tracks, chapters and thumbnail previews while seeking
-- Live streams with live chat, and a double tap on the right to catch up when the stream trails
-- Stable Volume evens out loud and quiet parts
-- End screen cards over the last seconds of a video
-- Haptics on seeks, skips, Play and Pause, speed and quality changes, and results
-- Lock screen and Control Center controls, and AirPlay audio
-- Miniplayer that floats above the tabs, with light from the video behind it and a progress line on its edge. Drag it to the bottom of the screen to close it
-- Watch Together: watch the same video in sync with friends in a room, from the ••• menu
-- Sleep timer and autoplay
-- Reads less ahead on cellular and hotspots (30 seconds or 50 MB) than on Wi-Fi (2 minutes or 200 MB)
-
-### Video page
-- Likes, dislike estimates, Follow, Watch Later, playlists and share
-- Comments and replies, sorted by Top or Newest, with likes and dislikes. Edit, delete or report a comment from its menu
-- A time in a comment or description plays from there
-- Up Next, channel pages with Shorts, Live, Podcasts and Releases tabs, and search inside a channel
-
-### Shorts
-- Vertical swipe through YouTube's own Shorts sequence
-- The next Short's address is loaded ahead of the swipe
-
-### Library
-- Watch Later, Liked Videos and your playlists
-- Create and edit playlists
-- Downloads with quality choice, progress on each row and Cancel All
-
-### Accounts and search
-- Google sign-in inside the app, with several accounts, each keeping its own data
-- History and the notification inbox, with an unread badge, are icons at the top of every tab
-- Search with suggestions and history, filters for Never Seen and Live videos, and an incognito mode that stops recording it
-- Opens YouTube links pasted in search, and `youtube://`, `vnd.youtube://` and `wooftube://` links from other apps
-- Checks GitHub for a newer release and marks the profile picture when one is out
-- Adds WoofTube to the share sheet, so a shared YouTube link opens in the app
-- Plays the video on a TV linked with its code in Settings > Integrations, in YouTube on the TV or SmartTube
-- Can stop saving search and watch history, in Settings > Privacy
-
-### Look
+- Explore and Following feeds that mix YouTube videos and live Twitch streams
+- mpv player with quality, speed, captions, chapters and a floating miniplayer
+- Live chat with Super Chats, Bits, subs and raids
+- Comments with replies, sorting, editing and reporting
+- Shorts, downloads, playlists, Watch Later and History
+- Several Google accounts and a Twitch account
+- Watch Together, and playback on a TV
 - Accent colours that also change the app icon
-- Light, dark or system appearance
-- Icons with their own animation that follow the real state: the speed needle, the download ring, the sleep timer countdown
-- Pages open by growing out of what you tapped
-- Settings for the Library layout, the start tab and a left-handed tab bar
-- Three cover sizes for videos and two for Shorts, the same across the app
+
+Removing Twitch's ads breaks Twitch's Terms of Service.
 
 ## Speed
 
@@ -129,14 +75,6 @@ brew install xcodegen
 ```bash
 cd app && xcodegen generate && open WoofTube.xcodeproj
 ```
-
-## Account risk
-
-Google can challenge or restrict an account used in an unofficial app, and posting comments is more visible than watching. Test with a second account.
-
-## Project status
-
-Version 1.6. Each feature still needs testing on more devices.
 
 ## Credits
 
