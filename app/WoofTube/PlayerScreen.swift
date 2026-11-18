@@ -2124,6 +2124,8 @@ struct ChannelView: View {
     @State private var model = FeedModel()
     @State private var page: YouTubeChannelPage?
     @State private var isSubscribed = false
+    @State private var bell: ChannelBell?
+    @State private var bellTaps = 0
     @State private var selectedTab: String?
     @State private var isLoading = true
     @State private var featured: YouTubeVideo?
@@ -2251,6 +2253,9 @@ struct ChannelView: View {
             }
         } buttons: {
             SubscribeButton(channelId: channelId, isSubscribed: isSubscribed, isLarge: true) { isSubscribed = $0 }
+            if isSubscribed, let bell {
+                bellMenu(bell)
+            }
             Button {
                 searchTaps += 1
                 Task {
@@ -2273,6 +2278,31 @@ struct ChannelView: View {
                     ChannelBanner(url: banner, topInset: topInset)
                 }
             }
+        }
+    }
+
+    /// All, Personalized or None, as YouTube's own bell offers.
+    private func bellMenu(_ bell: ChannelBell) -> some View {
+        Menu {
+            ForEach(bell.options) { option in
+                Button {
+                    choose(option)
+                } label: {
+                    Label(option.title, systemImage: option.kind == bell.selected ? "checkmark" : option.systemImage)
+                }
+            }
+        } label: {
+            HeaderRoundIcon(systemImage: bell.current?.systemImage ?? "bell", motion: .bellRing, trigger: bellTaps)
+        }
+        .accessibilityLabel("Notifications: \(bell.current?.title ?? "Unknown")")
+    }
+
+    private func choose(_ option: ChannelBell.Option) {
+        let previous = bell?.selected
+        bell?.selected = option.kind
+        bellTaps += 1
+        Task {
+            if !(await ChannelBell.send(option)) { bell?.selected = previous }
         }
     }
 
@@ -2317,6 +2347,7 @@ struct ChannelView: View {
             (JSON.first("subscribed", in: json) as? Bool == true, JSON.first("channelVideoPlayerRenderer", in: json) as? [String: Any])
         }
         isSubscribed = subscribed || Subscriptions.shared.ids.contains(channelId)
+        bell = await offMain { ChannelBell(json: json) }
         if let player = trailer, let id = player["videoId"] as? String {
             featured = YouTubeVideo(
                 videoId: id,

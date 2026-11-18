@@ -280,3 +280,90 @@ private struct NotificationRow: View {
             .padding(.leading, onCover ? -RowAvatar.overlap : 0)
     }
 }
+
+/// A channel's bell: whether YouTube notifies about all of its uploads, some, or none.
+/// YouTube sets every new subscription to Personalized, which mostly sends Shorts and highlights.
+struct ChannelBell: Equatable {
+    struct Option: Identifiable, Equatable {
+        let title: String
+        /// YouTube's icon name, the same in both menu shapes.
+        let kind: String
+        let params: String
+        var id: String { params }
+
+        var systemImage: String {
+            switch kind {
+            case "NOTIFICATIONS_ACTIVE": "bell.and.waves.left.and.right.fill"
+            case "NOTIFICATIONS_OFF": "bell.slash"
+            default: "bell"
+            }
+        }
+    }
+
+    let options: [Option]
+    var selected: String?
+
+    var current: Option? { options.first { $0.kind == selected } }
+
+    /// The menu comes as old menu items or newer list items, inside the subscribe button.
+    init?(json: Any?) {
+        var options: [Option] = []
+        func walk(_ object: Any?) {
+            if let dict = object as? [String: Any] {
+                if let item = (dict["menuServiceItemRenderer"] ?? dict["listItemViewModel"]) as? [String: Any],
+                   let params = JSON.string("params", in: JSON.first("modifyChannelNotificationPreferenceEndpoint", in: item)),
+                   let title = JSON.text(item["text"]) ?? JSON.text(item["title"]) {
+                    let kind = JSON.string("iconType", in: item) ?? JSON.string("imageName", in: item) ?? ""
+                    if !options.contains(where: { $0.title == title }) {
+                        options.append(Option(title: title, kind: kind, params: params))
+                    }
+                    return
+                }
+                dict.values.forEach(walk)
+            } else if let array = object as? [Any] {
+                array.forEach(walk)
+            }
+        }
+        walk(json)
+        guard !options.isEmpty else { return nil }
+        self.options = options
+        selected = Self.currentKind(in: json)
+        FileLog.shared.append("bell", "INFO", "options \(options.map { "\($0.title)=\($0.kind)" }), current \(selected ?? "unknown")")
+    }
+
+    /// The toggle button names its current state; the newer page keeps it in an entity instead.
+    private static func currentKind(in json: Any?) -> String? {
+        if let toggle = JSON.first("subscriptionNotificationToggleButtonRenderer", in: json) as? [String: Any],
+           let current = toggle["currentStateId"] as? Int,
+           let states = toggle["states"] as? [[String: Any]],
+           let state = states.first(where: { $0["stateId"] as? Int == current }) {
+            return JSON.string("iconType", in: state)
+        }
+        guard let state = JSON.string("state", in: JSON.first("subscriptionNotificationStateEntity", in: json)) else { return nil }
+        if state.hasSuffix("_ALL") { return "NOTIFICATIONS_ACTIVE" }
+        if state.hasSuffix("_OFF") || state.hasSuffix("_NONE") { return "NOTIFICATIONS_OFF" }
+        return "NOTIFICATIONS_NONE"
+    }
+
+    /// Says whether YouTube took the choice.
+    static func send(_ option: Option) async -> Bool {
+        (try? await YouTubeAPI.post("notification/modify_channel_preference", body: ["params": option.params])) != nil
+    }
+
+    static func selfCheck() {
+        let menu: [String: Any] = ["subscriptionNotificationToggleButtonRenderer": [
+            "currentStateId": 2,
+            "states": [["stateId": 2, "state": ["buttonRenderer": ["icon": ["iconType": "NOTIFICATIONS_NONE"]]]]],
+            "command": ["items": [
+                ["menuServiceItemRenderer": ["text": ["simpleText": "All"], "icon": ["iconType": "NOTIFICATIONS_ACTIVE"],
+                                             "serviceEndpoint": ["modifyChannelNotificationPreferenceEndpoint": ["params": "a"]]]],
+                ["listItemViewModel": ["title": ["content": "None"], "leadingImage": ["sources": [["clientResource": ["imageName": "NOTIFICATIONS_OFF"]]]],
+                                       "rendererContext": ["commandContext": ["onTap": ["innertubeCommand": ["modifyChannelNotificationPreferenceEndpoint": ["params": "c"]]]]]]]
+            ]]
+        ]]
+        let bell = ChannelBell(json: menu)
+        assert(bell?.options.map(\.title) == ["All", "None"] && bell?.options.map(\.params) == ["a", "c"])
+        assert(bell?.selected == "NOTIFICATIONS_NONE" && bell?.options.last?.systemImage == "bell.slash")
+        assert(ChannelBell(json: ["a": 1]) == nil)
+    }
+}

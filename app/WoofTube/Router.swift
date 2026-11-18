@@ -48,7 +48,10 @@ final class Router {
     private(set) var isVideoMoving = false
     private(set) var stillFrame: UIImage?
     private var moveTask: Task<Void, Never>?
+    private var frameTask: Task<Void, Never>?
     private static let stillWidth: CGFloat = 720
+    /// About 30 pictures a second while the video moves.
+    private static let movingFrameInterval = Duration.milliseconds(33)
     private static let zoomTime = Duration.milliseconds(700)
     private static let layerSettleTime = Duration.milliseconds(150)
     private(set) var queue: [YouTubeVideo] = []
@@ -345,6 +348,15 @@ final class Router {
         moveTask?.cancel()
         stillFrame = moving.currentFrame(width: Self.stillWidth)
         isVideoMoving = true
+        // The stand-in follows the video, so the picture keeps playing through the zoom.
+        frameTask?.cancel()
+        frameTask = Task {
+            while isVideoMoving, !Task.isCancelled {
+                try? await Task.sleep(for: Self.movingFrameInterval)
+                guard isVideoMoving, !moving.isPaused, let frame = moving.currentFrame(width: Self.stillWidth) else { continue }
+                stillFrame = frame
+            }
+        }
         // A closing page says when it's gone. An opening one doesn't say when its zoom ends.
         if isOpening { finishVideoMove(after: Self.zoomTime) }
     }
