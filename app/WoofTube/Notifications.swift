@@ -152,10 +152,14 @@ struct NotificationsView: View {
     private func load() async {
         defer { isLoading = false }
         do {
-            let json = try await YouTubeAPI.post(
-                "notification/get_notification_menu",
-                body: ["notificationsMenuRequestType": "NOTIFICATIONS_MENU_REQUEST_TYPE_INBOX"]
-            )
+            // The website's inbox. The older menu request answers with a short list, mostly Shorts.
+            var json = try await YouTubeAPI.post("browse", body: ["browseId": "FEnotifications_inbox"])
+            if Self.sections(in: json).isEmpty {
+                json = try await YouTubeAPI.post(
+                    "notification/get_notification_menu",
+                    body: ["notificationsMenuRequestType": "NOTIFICATIONS_MENU_REQUEST_TYPE_INBOX"]
+                )
+            }
             sections = Self.sections(in: json)
             errorText = nil
         } catch {
