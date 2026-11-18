@@ -70,10 +70,13 @@ struct Storyboard {
 /// Thrown with one line per client tried, shown on screen because the app runs on the phone.
 struct StreamFailure: LocalizedError {
     let attempts: [String]
+    /// YouTube asked to prove this isn't a bot, or to reload: a renewed sign-in can pass.
+    let needsRenewal: Bool
     var errorDescription: String? { attempts.joined(separator: "\n") }
 
-    init(attempts: [String]) {
+    init(attempts: [String], needsRenewal: Bool = false) {
         self.attempts = attempts
+        self.needsRenewal = needsRenewal
         FileLog.shared.append("stream", "ERROR", attempts.joined(separator: " | "))
     }
 }
@@ -182,10 +185,19 @@ enum StreamLoader {
         return url + "&pot=" + pot
     }
 
+    /// Set by Session: renews the sign-in after a bot check, and says whether trying again can help.
+    @MainActor static var renewSession: @MainActor () async -> Bool = { false }
+
     /// The same address again when it's fresh, and the same request when one is already on its way.
+    /// After a bot check it renews the sign-in once and tries again.
     static func load(videoId: String, maxHeight: Int) async throws -> LoadedStream {
         try await cache.stream(videoId: videoId, maxHeight: maxHeight) {
-            try await resolve(videoId: videoId, maxHeight: maxHeight)
+            do {
+                return try await resolve(videoId: videoId, maxHeight: maxHeight)
+            } catch let failure as StreamFailure where failure.needsRenewal {
+                guard await renewSession() else { throw failure }
+                return try await resolve(videoId: videoId, maxHeight: maxHeight)
+            }
         }
     }
 
@@ -208,6 +220,7 @@ enum StreamLoader {
 
         var attempts: [String] = []
         var isLive = false
+        var needsRenewal = false
         for client in directClients {
             do {
                 let timestamp = client.useSignatureTimestamp ? await providers.signatureTimestamp?() : nil
@@ -219,6 +232,11 @@ enum StreamLoader {
                 )
                 guard response.isPlayable, let data = response.streamingData else {
                     let status = response.playabilityStatus
+                    // The bot check comes as LOGIN_REQUIRED in every language; the words cover the TV client's reload.
+                    let reason = status?.reason?.lowercased() ?? ""
+                    if status?.status == "LOGIN_REQUIRED" || reason.contains("not a bot") || reason.contains("reloaded") {
+                        needsRenewal = true
+                    }
                     attempts.append("\(client.clientName): \(status?.reason ?? status?.status ?? "no streams")")
                     continue
                 }
@@ -266,7 +284,7 @@ enum StreamLoader {
         }
 
         // The fallback below only finds files, which a live stream doesn't have.
-        if isLive { throw StreamFailure(attempts: attempts) }
+        if isLive { throw StreamFailure(attempts: attempts, needsRenewal: needsRenewal) }
 
         // Web clients return encrypted URLs. This path decrypts them, but only gives a combined stream.
         do {
@@ -281,7 +299,7 @@ enum StreamLoader {
             )
         } catch {
             attempts.append("Fallback: \(error.localizedDescription)")
-            throw StreamFailure(attempts: attempts)
+            throw StreamFailure(attempts: attempts, needsRenewal: needsRenewal)
         }
     }
 }

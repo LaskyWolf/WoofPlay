@@ -28,6 +28,15 @@ final class Session: ObservableObject {
     private let key = "auth"
     private let accountsKey = "accounts"
     private static let accountRetryDelay = Duration.seconds(2)
+    /// One renewal serves every video that hit the same bot check.
+    private var renewal: Task<Bool, Never>?
+    private var lastRenewal: Date?
+    /// A renewal that didn't help isn't repeated for every video in a row.
+    private static let renewalPause: TimeInterval = 10 * 60
+
+    init() {
+        StreamLoader.renewSession = { [weak self] in await self?.renewForPlayback() ?? false }
+    }
 
     /// Google can answer as a guest while the session is stale, and that isn't an account.
     var currentAccountId: String? {
@@ -208,6 +217,46 @@ final class Session: ObservableObject {
         } else {
             isExpired = true
         }
+    }
+
+    /// YouTube asks a stale sign-in to prove it isn't a bot. This rotates Google's tokens and
+    /// takes a new visitor ID, then says whether playing again can help.
+    func renewForPlayback() async -> Bool {
+        if let renewal { return await renewal.value }
+        if let lastRenewal, Date().timeIntervalSince(lastRenewal) < Self.renewalPause { return false }
+        let task = Task { await renew() }
+        renewal = task
+        let renewed = await task.value
+        renewal = nil
+        lastRenewal = Date()
+        return renewed
+    }
+
+    private func renew() async -> Bool {
+        let tube = InnerTubeClient.wooftube
+        var auth = currentAuth
+        if isSignedIn {
+            let reissued = await SessionTokenRefresher.shared.refreshRotatedTokens(baseCookies: auth.cookies)
+            if !reissued.isEmpty {
+                auth.cookies = reissued
+            } else if (try? await tube.verifySession()) == false {
+                // Google refused the round trip: only signing in again helps.
+                isExpired = true
+                return false
+            }
+        }
+        let previousVisitor = auth.visitorData
+        auth.visitorData = nil
+        save(auth)
+        await tube.updateAuth(auth)
+        await fillVisitorData()
+        // Without a visitor ID YouTube refuses every video client, so the old one is better than none.
+        if currentAuth.visitorData == nil, let previousVisitor {
+            auth.visitorData = previousVisitor
+            save(auth)
+            await tube.updateAuth(auth)
+        }
+        return true
     }
 
     private func save(_ auth: AuthState) {
