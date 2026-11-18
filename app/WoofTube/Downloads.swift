@@ -285,7 +285,15 @@ final class DownloadStore: ObservableObject {
         Task {
             defer { UIApplication.shared.endBackgroundTask(backgroundTask) }
             do {
-                let new = try await makeJob(video)
+                let stream = try await loadStream(of: video)
+                guard generation == startedIn else { return }
+                if let sabr = stream.sabr {
+                    try await saveSegments(of: sabr, for: video, startedIn: startedIn)
+                    starting = nil
+                    conclude(video, failure: nil)
+                    return
+                }
+                let new = try makeJob(video, from: stream)
                 guard generation == startedIn else { return }
                 starting = nil
                 job = new
@@ -300,13 +308,16 @@ final class DownloadStore: ObservableObject {
         }
     }
 
-    private func makeJob(_ video: YouTubeVideo) async throws -> Job {
-        let id = video.videoId
+    private func loadStream(of video: YouTubeVideo) async throws -> LoadedStream {
         if UserDefaults.standard.bool(forKey: DownloadSettings.wifiOnlyKey), network.currentPath.usesInterfaceType(.cellular) {
             throw NeedsWiFi()
         }
         let chosen = UserDefaults.standard.integer(forKey: DownloadSettings.maxHeightKey)
-        let stream = try await StreamLoader.load(videoId: id, maxHeight: chosen > 0 ? chosen : queueHeight)
+        return try await StreamLoader.load(videoId: video.videoId, maxHeight: chosen > 0 ? chosen : queueHeight)
+    }
+
+    private func makeJob(_ video: YouTubeVideo, from stream: LoadedStream) throws -> Job {
+        let id = video.videoId
         guard let videoURL = stream.videoURL.flatMap(URL.init(string:)),
               let audioURL = stream.audioURL.flatMap(URL.init(string:)) else { throw NotDownloadable() }
         let videoFile = id + "-video"
@@ -318,6 +329,53 @@ final class DownloadStore: ObservableObject {
             chunks: Self.chunks(of: videoFile, url: videoURL, size: stream.videoSize) + Self.chunks(of: audioFile, url: audioURL, size: stream.audioSize),
             started: Date()
         )
+    }
+
+    /// SABR hands out a video one segment at a time, so it's written here instead of by the system's download queue.
+    /// The init segment and then every segment in order make the same file a direct download gives.
+    // ponytail: runs only while the app is open, and starts over after a relaunch; resume from the last segment if long videos need it.
+    private func saveSegments(of media: SABRMedia, for video: YouTubeVideo, startedIn: Int) async throws {
+        let folder = Self.folder
+        let files = [(media.video, video.videoId + "-video"), (media.audio, video.videoId + "-audio")]
+        let total = Double(media.video.starts.count + media.audio.starts.count)
+        let started = Date()
+        var done = 0.0
+        var bytes: Int64 = 0
+        do {
+            for (track, file) in files {
+                let destination = folder.appending(path: file)
+                let partial = folder.appending(path: file + Self.joiningSuffix)
+                FileManager.default.createFile(atPath: partial.path, contents: nil)
+                let handle = try FileHandle(forWritingTo: partial)
+                defer { try? handle.close() }
+                let initSegment = try await media.session.initSegment(of: track.format)
+                try handle.write(contentsOf: initSegment)
+                bytes += Int64(initSegment.count)
+                for (index, start) in track.starts.enumerated() {
+                    guard generation == startedIn else { throw CancellationError() }
+                    let segment = try await media.session.segment(index + 1, of: track.format, startMs: start)
+                    try handle.write(contentsOf: segment)
+                    bytes += Int64(segment.count)
+                    done += 1
+                    if let current = active.first?.fraction, done / total - current >= 0.01 {
+                        active[0].fraction = done / total
+                    }
+                }
+                try handle.close()
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: partial, to: destination)
+            }
+        } catch {
+            for (_, file) in files {
+                try? FileManager.default.removeItem(at: folder.appending(path: file))
+                try? FileManager.default.removeItem(at: folder.appending(path: file + Self.joiningSuffix))
+            }
+            throw error
+        }
+        guard generation == startedIn else { throw CancellationError() }
+        lastReport = "Last download: \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) in \(Int(Date().timeIntervalSince(started))) s (SABR)"
+        items.insert(Item(video: video, videoFile: files[0].1, audioFile: files[1].1), at: 0)
+        save()
     }
 
     /// A whole file in one request when YouTube doesn't say how big it is.

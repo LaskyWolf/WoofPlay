@@ -1,5 +1,7 @@
+import CoreMedia
 import Foundation
 import SwiftyTube
+import VideoToolbox
 
 struct LoadedStream: @unchecked Sendable {
     let url: String
@@ -16,6 +18,8 @@ struct LoadedStream: @unchecked Sendable {
     var title: String?
     var channelTitle: String?
     var channelId: String?
+    /// A video YouTube only gives in SABR segments. Downloads read the segments from here.
+    var sabr: SABRMedia?
 }
 
 struct AudioTrack: Identifiable, Hashable {
@@ -121,17 +125,25 @@ enum StreamLoader {
         return [uncompressed, originals].first { !$0.isEmpty } ?? items
     }
 
-    /// H.264 only, while it's offered. mpv decodes AV1 and VP9 in software on the phone, which drops frames
-    /// and puts the picture out of step. SwiftyTube counts every mp4 as H.264, and AV1 comes in mp4 too.
-    // ponytail: caps the picture at 1080p, YouTube's highest H.264; allow VP9 or AV1 once Diagnostics shows them in hardware.
-    private static func hardwareDecoded<Item>(in items: [Item], codec: (Item) -> String) -> [Item] {
-        let h264 = items.filter { codec($0).lowercased().hasPrefix("avc1") }
-        return h264.isEmpty ? items : h264
+    /// iPhones with an A17 Pro or M chip and later decode AV1 in hardware. AV1 is how YouTube sends 1440p and 4K.
+    static let decodesAV1 = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+
+    /// H.264, and AV1 where the phone has the hardware for it. mpv decodes the rest in software,
+    /// which drops frames and puts the picture out of step. SwiftyTube counts every mp4 as H.264, and AV1 comes in mp4 too.
+    private static func hardwareDecoded<Item>(in items: [Item], codec: (Item) -> String, av1: Bool = decodesAV1) -> [Item] {
+        let kept = items.filter { isHardwareDecoded(codec($0), av1: av1) }
+        return kept.isEmpty ? items : kept
+    }
+
+    static func isHardwareDecoded(_ codec: String, av1: Bool = decodesAV1) -> Bool {
+        let codec = codec.lowercased()
+        return codec.hasPrefix("avc1") || (av1 && codec.hasPrefix("av01"))
     }
 
     static func selfCheck() {
-        assert(hardwareDecoded(in: ["av01.0.13M.08", "avc1.64002A", "vp9"], codec: { $0 }) == ["avc1.64002A"])
-        assert(hardwareDecoded(in: ["av01.0.13M.08", "vp9"], codec: { $0 }) == ["av01.0.13M.08", "vp9"])
+        assert(hardwareDecoded(in: ["av01.0.13M.08", "avc1.64002A", "vp9"], codec: { $0 }, av1: false) == ["avc1.64002A"])
+        assert(hardwareDecoded(in: ["av01.0.13M.08", "avc1.64002A", "vp9"], codec: { $0 }, av1: true) == ["av01.0.13M.08", "avc1.64002A"])
+        assert(hardwareDecoded(in: ["av01.0.13M.08", "vp9"], codec: { $0 }, av1: false) == ["av01.0.13M.08", "vp9"])
         func address(_ tags: String) -> String { "https://a.com/videoplayback?xtags=\(tags)&itag=251" }
         let dub = address("acont%3Ddubbed-auto%3Alang%3Dit")
         let original = address("acont%3Doriginal%3Alang%3Den")
@@ -168,10 +180,34 @@ enum StreamLoader {
         deviceMake: "Apple",
         deviceModel: "RealityDevice17,1"
     )
+    /// The iOS app with a PO token, the proof of a real device YouTube asks for when it suspects a bot.
+    /// Without a token it's the plain iOS client.
+    private static let iOSWithToken = YouTubeClient(
+        clientName: YouTubeClient.iOS.clientName,
+        clientVersion: YouTubeClient.iOS.clientVersion,
+        clientId: YouTubeClient.iOS.clientId,
+        userAgent: YouTubeClient.iOS.userAgent,
+        includeUserAgentInContext: true,
+        useWebPoTokens: true,
+        osName: YouTubeClient.iOS.osName,
+        osVersion: YouTubeClient.iOS.osVersion,
+        deviceMake: YouTubeClient.iOS.deviceMake,
+        deviceModel: YouTubeClient.iOS.deviceModel
+    )
+    /// The TV client without the account: with Google's cookies it answers "The page needs to be reloaded".
+    private static let tvAsGuest = YouTubeClient(
+        clientName: YouTubeClient.tvHtml5.clientName,
+        clientVersion: YouTubeClient.tvHtml5.clientVersion,
+        clientId: YouTubeClient.tvHtml5.clientId,
+        userAgent: YouTubeClient.tvHtml5.userAgent,
+        includeUserAgentInContext: true,
+        useSignatureTimestamp: true,
+        useWebPoTokens: true
+    )
     /// In SwiftyTube's list the other direct clients are refused, or their addresses stop working
     /// partway through a video. The older visionOS stays in case an account is treated differently.
-    /// The TV client goes last: it sends the signed-in account, so YouTube doesn't ask it to prove it isn't a bot.
-    private static let directClients: [YouTubeClient] = [visionOS, .visionOS, .iOS, .tvHtml5]
+    /// The TV clients go last, since their video addresses come encrypted.
+    private static let directClients: [YouTubeClient] = [visionOS, iOSWithToken, .visionOS, tvAsGuest, .tvHtml5]
     /// Without the TV client: this path keeps only its audio, since the TV's video addresses come encrypted.
     private static let fallbackChain = ([visionOS, .visionOS, .iOS] as [YouTubeClient]).map { FallbackClient(client: $0, skipValidation: $0 == .iOS) }
         + [FallbackClient(client: .web, skipValidation: true)]
@@ -286,6 +322,13 @@ enum StreamLoader {
         // The fallback below only finds files, which a live stream doesn't have.
         if isLive { throw StreamFailure(attempts: attempts, needsRenewal: needsRenewal) }
 
+        // On a network YouTube flags, only the signed-in web client gets through, and it only offers SABR.
+        do {
+            return try await sabr(videoId: videoId, maxHeight: maxHeight, providers: providers)
+        } catch {
+            attempts.append("WEB SABR: \(error.localizedDescription)")
+        }
+
         // Web clients return encrypted URLs. This path decrypts them, but only gives a combined stream.
         do {
             let request = StreamResolveRequest(videoId: videoId, chain: fallbackChain)
@@ -301,6 +344,77 @@ enum StreamLoader {
             attempts.append("Fallback: \(error.localizedDescription)")
             throw StreamFailure(attempts: attempts, needsRenewal: needsRenewal)
         }
+    }
+
+    /// The web client's video through SABR: YouTube hands it out in segments, asked one request at a time,
+    /// and the app's local server gives them to mpv as HLS.
+    private static func sabr(videoId: String, maxHeight: Int, providers: StreamResolveProviders) async throws -> LoadedStream {
+        let tube = InnerTubeClient.wooftube
+        // YouTube currently binds the web client's tokens to the video.
+        let videoToken = try? await PoTokenGenerator.shared.generate(videoId: videoId, sessionId: nil).streamingDataPoToken
+        let timestamp = await providers.signatureTimestamp?()
+        let json = try await tube.player(videoId: videoId, client: .web, options: PlayerRequestOptions(signatureTimestamp: timestamp, poToken: videoToken))
+        let playability = json["playabilityStatus"] as? [String: Any]
+        guard playability?["status"] as? String == "OK" else {
+            throw SABRError(playability?["reason"] as? String ?? playability?["status"] as? String ?? "not playable")
+        }
+        let streaming = json["streamingData"] as? [String: Any]
+        let ustreamer = (((json["playerConfig"] as? [String: Any])?["mediaCommonConfig"] as? [String: Any])?["mediaUstreamerRequestConfig"] as? [String: Any])?["videoPlaybackUstreamerConfig"] as? String
+        guard let address = streaming?["serverAbrStreamingUrl"] as? String,
+              let config = ustreamer.flatMap(Data.init(base64URL:)) else {
+            throw SABRError("no SABR address")
+        }
+        let formats = (streaming?["adaptiveFormats"] as? [[String: Any]] ?? []).compactMap(SABRFormat.init(json:))
+        guard let video = formats
+                .filter({ $0.mimeType.hasPrefix("video/mp4") && isHardwareDecoded($0.codec) && $0.shortSide <= maxHeight })
+                .max(by: { ($0.shortSide, $0.bitrate) < ($1.shortSide, $1.bitrate) }),
+              let audio = formats
+                .filter({ $0.mimeType.hasPrefix("audio/mp4") && !$0.isDrc && $0.isDefaultAudio })
+                .max(by: { $0.bitrate < $1.bitrate }) else {
+            throw SABRError("no H.264 or AV1 video, or no AAC audio")
+        }
+
+        // The address carries the same "n" challenge as ordinary ones; the decipher step solves it when given no signature.
+        var url = address.replacingOccurrences(of: ".c.youtube.com/videoplayback", with: ".googlevideo.com/videoplayback")
+        if let decipher = providers.cipherURL, let playerJs = providers.playerJs,
+           let encoded = url.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+           let solved = try? await decipher("url=" + encoded, playerJs()) {
+            url = solved
+        }
+
+        // Without the video binding, a signed-in token is bound to the account, a guest's to the visitor.
+        let auth = await tube.currentAuth()
+        let otherToken: (@Sendable () async -> Data?)? = (auth.dataSyncId ?? auth.visitorData).map { binding in
+            {
+                let token = try? await PoTokenGenerator.shared.generate(videoId: binding, sessionId: nil).streamingDataPoToken
+                return token.flatMap(Data.init(base64URL:))
+            }
+        }
+        let session = SABRSession(
+            video: video,
+            audio: audio,
+            url: url,
+            ustreamerConfig: config,
+            language: Locale.current.language.languageCode?.identifier ?? "en",
+            poToken: videoToken.flatMap(Data.init(base64URL:)),
+            otherToken: otherToken
+        )
+        guard let videoTrack = SABRTrack(format: video, initSegment: try await session.initSegment(of: video)),
+              let audioTrack = SABRTrack(format: audio, initSegment: try await session.initSegment(of: audio)) else {
+            throw SABRError("no segment index in the init segment")
+        }
+        let details = json["videoDetails"] as? [String: Any]
+        let media = SABRMedia(session: session, video: videoTrack, audio: audioTrack)
+        return LoadedStream(
+            url: try await SABRServer.shared.register(media),
+            summary: "WEB · SABR · \(video.shortSide)p · \(video.codec)",
+            captions: await captions(videoId: videoId),
+            duration: videoTrack.durationMs / 1000,
+            title: details?["title"] as? String,
+            channelTitle: details?["author"] as? String,
+            channelId: details?["channelId"] as? String,
+            sabr: media
+        )
     }
 }
 

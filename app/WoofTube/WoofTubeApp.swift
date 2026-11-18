@@ -62,6 +62,7 @@ struct WoofTubeApp: App {
                 TwitchAdFilter.selfCheck()
                 LiveChatModel.selfCheck()
                 IRCLine.selfCheck()
+                UMP.selfCheck()
                 #endif
             }
             .alert("Session Expired", isPresented: $session.isExpired) {
