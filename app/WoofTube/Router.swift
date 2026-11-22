@@ -99,11 +99,11 @@ final class Router {
     var usesSponsorBlock: Bool {
         didSet { UserDefaults.standard.set(usesSponsorBlock, forKey: Self.usesSponsorBlockKey) }
     }
-    /// Evens out loud and quiet videos, and quiet and loud moments inside one.
+    /// YouTube's evened-out copy of the audio, where the video has one. It applies from the next video.
     var stableVolume: Bool {
         didSet {
             UserDefaults.standard.set(stableVolume, forKey: Self.stableVolumeKey)
-            applyStableVolume()
+            Task { await StreamLoader.forgetAll() }
         }
     }
     private(set) var audioTracks: [AudioTrack] = []
@@ -121,8 +121,6 @@ final class Router {
     @ObservationIgnored private(set) lazy var shortsPlayer: MpvPlayer = {
         let player = MpvPlayer()
         player.setProperty("loop-file", "inf")
-        player.setProperty("af", stableVolume ? Self.stableVolumeFilter : "")
-        didCreateShortsPlayer = true
         return player
     }()
     @ObservationIgnored private(set) lazy var sleepTimer = SleepTimer { [weak self] in self?.player.setPaused(true) }
@@ -138,14 +136,10 @@ final class Router {
     private static let pictureInPictureKey = "allowsPictureInPicture"
     private static let usesSponsorBlockKey = "skipsSponsors"
     private static let stableVolumeKey = "stableVolume"
-    /// ffmpeg's dynamic normaliser: it reads a few seconds ahead and raises or lowers the sound gradually,
-    /// up to 10 times louder, so speech never jumps.
-    private static let stableVolumeFilter = "lavfi=[dynaudnorm=f=250:g=31:m=10]"
     private static let captionLanguageKey = "captionLanguage"
     private var loadTask: Task<Void, Never>?
     private var didCreateShortsWindow = false
     /// Reading `shortsPlayer` creates it, so settings check this first.
-    @ObservationIgnored private var didCreateShortsPlayer = false
     private var wasInBackground = false
     private var watchReporter: WatchReporter?
     private(set) var isLive = false {
@@ -177,15 +171,8 @@ final class Router {
         allowsPictureInPicture = defaults.object(forKey: Self.pictureInPictureKey) as? Bool ?? true
         usesSponsorBlock = defaults.bool(forKey: Self.usesSponsorBlockKey)
         stableVolume = defaults.bool(forKey: Self.stableVolumeKey)
-        applyStableVolume()
         setUpRemoteCommands()
         player.onEnded = { [weak self] in self?.playNextAfterEnd() }
-    }
-
-    private func applyStableVolume() {
-        let filter = stableVolume ? Self.stableVolumeFilter : ""
-        player.setProperty("af", filter)
-        if didCreateShortsPlayer { shortsPlayer.setProperty("af", filter) }
     }
 
     /// For a tap on a video. History and other lists can show a Short as a normal video, so YouTube is asked first.

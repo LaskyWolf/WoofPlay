@@ -119,11 +119,16 @@ enum StreamLoader {
 
     /// A video with dubs lists every language side by side, so without this the choice falls on any of them.
     /// Videos with one language have no such tag and are kept whole.
-    private static func originalAudio<Item>(in items: [Item], url: (Item) -> String?) -> [Item] {
+    /// Stable Volume is YouTube's own: a copy of the audio with loud and quiet parts evened out (drc=1).
+    private static func originalAudio<Item>(in items: [Item], url: (Item) -> String?, stable: Bool = prefersStableVolume) -> [Item] {
         let originals = items.filter { audioTags(of: url($0)).contains(originalTag) }
-        let uncompressed = originals.filter { !audioTags(of: url($0)).contains(compressedTag) }
-        return [uncompressed, originals].first { !$0.isEmpty } ?? items
+        let pool = originals.isEmpty ? items : originals
+        let wanted = pool.filter { audioTags(of: url($0)).contains(compressedTag) == stable }
+        return wanted.isEmpty ? pool : wanted
     }
+
+    /// The Stable Volume setting, read here so downloads and playback pick the same audio.
+    static var prefersStableVolume: Bool { UserDefaults.standard.bool(forKey: "stableVolume") }
 
     /// iPhones with an A17 Pro or M chip and later decode AV1 in hardware. AV1 is how YouTube sends 1440p and 4K.
     static let decodesAV1 = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
@@ -149,9 +154,10 @@ enum StreamLoader {
         let original = address("acont%3Doriginal%3Alang%3Den")
         let compressed = address("acont%3Doriginal%3Adrc%3D1%3Alang%3Den")
         assert(audioTags(of: dub) == ["acont=dubbed-auto", "lang=it"])
-        assert(originalAudio(in: [dub, compressed, original], url: { $0 }) == [original])
-        assert(originalAudio(in: [dub, compressed], url: { $0 }) == [compressed])
-        assert(originalAudio(in: ["https://a.com/plain", dub], url: { $0 }) == ["https://a.com/plain", dub])
+        assert(originalAudio(in: [dub, compressed, original], url: { $0 }, stable: false) == [original])
+        assert(originalAudio(in: [dub, compressed, original], url: { $0 }, stable: true) == [compressed])
+        assert(originalAudio(in: [dub, compressed], url: { $0 }, stable: false) == [compressed])
+        assert(originalAudio(in: ["https://a.com/plain", dub], url: { $0 }, stable: false) == ["https://a.com/plain", dub])
     }
 
     /// The clients tried first for streams can return no storyboard, so this asks the iOS client.
@@ -346,6 +352,11 @@ enum StreamLoader {
         }
     }
 
+    private static func preferredStability(_ audio: [SABRFormat]) -> [SABRFormat] {
+        let wanted = audio.filter { $0.isDrc == prefersStableVolume }
+        return wanted.isEmpty ? audio : wanted
+    }
+
     /// The web client's video through SABR: YouTube hands it out in segments, asked one request at a time,
     /// and the app's local server gives them to mpv as HLS.
     private static func sabr(videoId: String, maxHeight: Int, providers: StreamResolveProviders) async throws -> LoadedStream {
@@ -368,8 +379,7 @@ enum StreamLoader {
         guard let video = formats
                 .filter({ $0.mimeType.hasPrefix("video/mp4") && isHardwareDecoded($0.codec) && $0.shortSide <= maxHeight })
                 .max(by: { ($0.shortSide, $0.bitrate) < ($1.shortSide, $1.bitrate) }),
-              let audio = formats
-                .filter({ $0.mimeType.hasPrefix("audio/mp4") && !$0.isDrc && $0.isDefaultAudio })
+              let audio = preferredStability(formats.filter { $0.mimeType.hasPrefix("audio/mp4") && $0.isDefaultAudio })
                 .max(by: { $0.bitrate < $1.bitrate }) else {
             throw SABRError("no H.264 or AV1 video, or no AAC audio")
         }
