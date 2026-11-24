@@ -38,13 +38,18 @@ final class Connectivity {
 }
 
 /// Takes the tab's title while offline: a pup asleep next to the word Offline.
+/// Where the header's buttons leave no room for the word on one line, the pup sleeps alone.
 struct OfflineTitle: View {
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 10) {
+                SleepingPup()
+                Text("Offline")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+                    .lineLimit(1)
+            }
             SleepingPup()
-            Text("Offline")
-                .font(.largeTitle)
-                .fontWeight(.bold)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Offline")
