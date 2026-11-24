@@ -202,6 +202,7 @@ private struct ResultFeedback: ViewModifier {
 
 struct RootTabs: View {
     @Environment(Router.self) private var router
+    @ObservedObject private var downloads = DownloadStore.shared
     @EnvironmentObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase
     /// Links the floating card and the video page for the zoom, as Woof Music does for its player.
@@ -212,6 +213,8 @@ struct RootTabs: View {
             .routerPresentations(router, isActive: !router.isExpanded)
             .task { await Subscriptions.shared.load() }
             .task { await AppUpdate.shared.check() }
+            // The app's only file picker: with one per page, a picker opened from a pushed page never reported back.
+            .addFilesImporter(isPresented: $downloads.picksFiles)
             // Waits here because a link can arrive while the app is still restoring the sign-in.
             .task(id: router.pendingLink) {
                 guard let link = router.pendingLink else { return }

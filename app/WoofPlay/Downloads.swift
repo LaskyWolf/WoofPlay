@@ -323,6 +323,8 @@ final class DownloadStore: ObservableObject {
 
     /// How many picked files are still being copied in.
     @Published private(set) var importing = 0
+    /// Shows the file picker, which lives once on the app's root; every Add Files… button sets this.
+    @Published var picksFiles = false
 
     nonisolated private static func place(_ url: URL, in folder: URL, moving: Bool) -> Result<(id: String, name: String), Error> {
         let scoped = url.startAccessingSecurityScopedResource()
@@ -903,7 +905,6 @@ struct DownloadsView: View {
     @ObservedObject private var store = DownloadStore.shared
     @Environment(Router.self) private var router
     @State private var confirmsRemoveAll = false
-    @State private var importsFiles = false
     @ObservedObject private var torrents = TorrentStore.shared
 
     private var videos: [YouTubeVideo] { store.items.map(\.video) }
@@ -994,7 +995,7 @@ struct DownloadsView: View {
         .toolbar(.visible, for: .navigationBar)
         .toolbar {
             Menu("More", systemImage: "ellipsis") {
-                Button("Add Files…", systemImage: "folder.badge.plus") { importsFiles = true }
+                Button("Add Files…", systemImage: "folder.badge.plus") { store.picksFiles = true }
                 Button("Add to Queue", systemImage: "text.append") {
                     for video in videos { router.addToQueue(video) }
                 }
@@ -1010,7 +1011,6 @@ struct DownloadsView: View {
                 .disabled(videos.isEmpty)
             }
         }
-        .addFilesImporter(isPresented: $importsFiles)
         .confirmationDialog("Remove All Downloads?", isPresented: $confirmsRemoveAll, titleVisibility: .visible) {
             Button("Remove All", role: .destructive) { store.deleteAll() }
         } message: {
@@ -1027,7 +1027,13 @@ extension View {
     /// The phone's file picker for video and audio files, copied into Downloads.
     func addFilesImporter(isPresented: Binding<Bool>) -> some View {
         fileImporter(isPresented: isPresented, allowedContentTypes: DownloadStore.importTypes, allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { DownloadStore.shared.addFiles(urls) }
+            switch result {
+            case .success(let urls):
+                FileLog.shared.append("downloads", "INFO", "picked \(urls.count) files")
+                DownloadStore.shared.addFiles(urls)
+            case .failure(let error):
+                FileLog.shared.append("downloads", "WARN", "file picker failed: \(error.localizedDescription)")
+            }
         }
     }
 }

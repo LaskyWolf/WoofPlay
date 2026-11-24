@@ -27,7 +27,6 @@ struct LibraryView: View {
     @EnvironmentObject private var settings: AppSettings
     @State private var isLoadingPlaylists = true
     @State private var musicPlaylistIds: Set<String> = []
-    @State private var importsFiles = false
     @State private var selectedFilter: Filter?
     @State private var isCreating = false
     @State private var newTitle = ""
@@ -168,11 +167,10 @@ struct LibraryView: View {
                 )
             }
             .contextMenu {
-                Button("Add Files…", systemImage: "folder.badge.plus") { importsFiles = true }
+                Button("Add Files…", systemImage: "folder.badge.plus") { downloads.picksFiles = true }
             }
         }
         .buttonStyle(ZoomPressStyle())
-        .addFilesImporter(isPresented: $importsFiles)
         .padding(.horizontal, Layout.screenPadding)
         .padding(.top, Layout.contentTopGap)
         .padding(.bottom, Layout.sectionGap)

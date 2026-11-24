@@ -192,13 +192,17 @@ struct OfflinePage: View {
                 } label: {
                     ShortcutTile(
                         title: "Downloads",
-                        subtitle: store.items.isEmpty ? "Nothing saved" : "\(store.items.count) \(store.items.count == 1 ? "video" : "videos")",
+                        subtitle: store.importing > 0 ? "Adding files…" : store.items.isEmpty ? "Nothing saved" : "\(store.items.count) \(store.items.count == 1 ? "video" : "videos")",
                         icon: "arrow.down.circle.fill",
                         tint: .violet,
                         covers: store.items.prefix(2).map { YouTubeVideo.cover(of: $0.video.videoId) }
                     )
                 }
                 .buttonStyle(ZoomPressStyle())
+                // As on Library's Downloads tile: files from the phone play offline too.
+                .contextMenu {
+                    Button("Add Files…", systemImage: "folder.badge.plus") { store.picksFiles = true }
+                }
             }
             .padding(.horizontal, Layout.screenPadding)
             .padding(.bottom, Layout.sectionGap)
