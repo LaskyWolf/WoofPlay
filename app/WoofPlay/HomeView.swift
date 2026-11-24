@@ -537,10 +537,9 @@ struct HomeView: View {
                 if Connectivity.shared.isOffline {
                     OfflineDownloads()
                 } else {
-                    let picks = QuickPicksSection.picks(from: model.items, pinned: QuickPins.shared.videos)
                     FeedContent(
                         model: model, retry: { await reload() },
-                        keeps: feedFilter(hiding: Set(picks.map(\.video.videoId))),
+                        keeps: feedFilter(hiding: Set(quickPicks.map(\.video.videoId))),
                         loading: .home,
                         // A short Home can fit whole in Quick Picks, which isn't "Nothing Here".
                         hidesEmptyState: showsStreams ? !twitchStreams.isEmpty : selectedChip == nil && !model.items.isEmpty
@@ -555,7 +554,7 @@ struct HomeView: View {
                         } else {
                             JumpBackInCard(history: history)
                             if selectedChip == nil {
-                                QuickPicksSection(picks: picks)
+                                QuickPicksSection(picks: quickPicks)
                                 LiveNowSection(streams: twitchLive.channels.map { ($0, false) } + twitchLive.suggested.map { ($0, true) })
                             }
                         }
@@ -608,6 +607,9 @@ struct HomeView: View {
     }
 
     private var showsStreams: Bool { selectedChip == Self.streamsChip }
+    private var quickPicks: [(video: YouTubeVideo, isPinned: Bool)] {
+        QuickPicksSection.picks(from: model.items, pinned: QuickPins.shared.videos)
+    }
 
     /// Without a filter, Quick Picks' videos leave the rows below, so none shows twice.
     private func feedFilter(hiding pickIds: Set<String>) -> ((FeedItem) -> Bool)? {

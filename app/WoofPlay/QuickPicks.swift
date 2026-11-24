@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftyTube
 
 /// Videos pinned to the front of Quick Picks, newest pin first. Kept on the phone only.
 @MainActor @Observable
