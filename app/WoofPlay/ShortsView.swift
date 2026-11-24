@@ -100,7 +100,7 @@ final class ShortsModel: ObservableObject {
     }
 
     private func loadDetails(of video: YouTubeVideo) async {
-        let json = try? await InnerTubeClient.wooftube.next(videoId: video.videoId)
+        let json = try? await InnerTubeClient.woofplay.next(videoId: video.videoId)
         guard !Task.isCancelled else { return }
         let videoId = video.videoId
         details = await offMain { json.map { WatchDetails(json: $0, videoId: videoId) } }
@@ -228,6 +228,8 @@ struct ShortsView: View {
         .background(.black)
         .offset(y: pullDistance)
         .gesture(PlayerDismissGesture.closing(isEnabled: scrub == nil, distance: $pullDistance) { router.minimizeShorts() })
+        // Holding and moving scrubs anywhere, so a finger near the bottom edge mustn't switch apps.
+        .defersSystemGestures(on: .bottom)
         .environment(\.colorScheme, .dark)
         .sensoryFeedback(.selection, trigger: scrub != nil)
         .onReceive(model.player.$isPaused.removeDuplicates()) { paused in

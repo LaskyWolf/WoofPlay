@@ -2,10 +2,14 @@ out/
 *.ipa
 
 # Native app
-app/WoofTube.xcodeproj/
-app/WoofTube/Info.plist
+app/WoofPlay.xcodeproj/
+app/WoofPlay/Info.plist
 app/ShareExtension/Info.plist
 app/build/
 
 # Private notes
 app/ROADMAP.md
+
+# Torrent engine, built by app/Torrent/build.sh
+app/Torrent/build/
+app/Torrent/TorrentNative.xcframework/

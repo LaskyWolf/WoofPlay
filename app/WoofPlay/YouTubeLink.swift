@@ -15,7 +15,7 @@ enum YouTubeLink: Equatable {
         "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
         "youtube-nocookie.com", "www.youtube-nocookie.com", "youtu.be", "www.youtu.be"
     ]
-    private static let appSchemes: Set<String> = ["wooftube", "youtube", "vnd.youtube"]
+    private static let appSchemes: Set<String> = ["woofplay", "youtube", "vnd.youtube"]
 
     init?(url: URL) {
         guard let link = Self.parse(url) else { return nil }
@@ -90,7 +90,7 @@ enum YouTubeLink: Equatable {
             "https://www.youtube.com/watch?v=\(id)&list=PL1&t=30", "http://m.youtube.com/watch?v=\(id)", "youtube.com/watch?v=\(id)",
             "https://youtu.be/\(id)?si=abc", "youtu.be/\(id)", "https://www.youtube.com/live/\(id)", "https://www.youtube.com/embed/\(id)",
             "youtube://www.youtube.com/watch?v=\(id)", "youtube://watch?v=\(id)", "vnd.youtube://\(id)", "vnd.youtube:\(id)",
-            "wooftube://www.youtube.com/watch?v=\(id)", "  https://youtu.be/\(id)\n"
+            "woofplay://www.youtube.com/watch?v=\(id)", "  https://youtu.be/\(id)\n"
         ] {
             assert(YouTubeLink(text: text) == .video(id), text)
         }

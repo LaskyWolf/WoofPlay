@@ -514,7 +514,9 @@ private struct TappingRefresh: ViewModifier {
     func body(content: Content) -> some View {
         content
             .refreshable {
-                await action()
+                // SwiftUI cancels the refresh's own task when the page changes while loading, which
+                // drops YouTube's answer and leaves the old rows. A separate task can't be cancelled that way.
+                await Task { await action() }.value
                 refreshes += 1
             }
             .sensoryFeedback(.impact(weight: .light), trigger: refreshes)

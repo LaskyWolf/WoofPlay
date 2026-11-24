@@ -27,6 +27,7 @@ struct LibraryView: View {
     @EnvironmentObject private var settings: AppSettings
     @State private var isLoadingPlaylists = true
     @State private var musicPlaylistIds: Set<String> = []
+    @State private var importsFiles = false
     @State private var selectedFilter: Filter?
     @State private var isCreating = false
     @State private var newTitle = ""
@@ -91,7 +92,7 @@ struct LibraryView: View {
                 Button("Create") {
                     let title = newTitle
                     router.run {
-                        _ = try await InnerTubeClient.wooftube.createPlaylist(title: title)
+                        _ = try await InnerTubeClient.woofplay.createPlaylist(title: title)
                         await loadPlaylists()
                     }
                 }
@@ -104,7 +105,7 @@ struct LibraryView: View {
                 Button("Delete", role: .destructive) {
                     guard let id = playlistToDelete?.playlistId else { return }
                     router.run {
-                        _ = try await InnerTubeClient.wooftube.deletePlaylist(playlistId: id)
+                        _ = try await InnerTubeClient.woofplay.deletePlaylist(playlistId: id)
                         await loadPlaylists()
                     }
                 }
@@ -127,7 +128,7 @@ struct LibraryView: View {
     }
 
     private func loadPlaylists() async {
-        let json = try? await InnerTubeClient.wooftube.browse(browseId: "FEplaylist_aggregation")
+        let json = try? await InnerTubeClient.woofplay.browse(browseId: "FEplaylist_aggregation")
         // A failed refresh leaves the list on screen.
         if let json {
             (playlists, videoCounts) = await offMain { (YouTubeFeedParser.playlists(in: json), Self.videoCounts(in: json)) }
@@ -165,8 +166,12 @@ struct LibraryView: View {
                     covers: covers(downloads.items.map(\.video))
                 )
             }
+            .contextMenu {
+                Button("Add Files…", systemImage: "folder.badge.plus") { importsFiles = true }
+            }
         }
         .buttonStyle(ZoomPressStyle())
+        .addFilesImporter(isPresented: $importsFiles)
         .padding(.horizontal, Layout.screenPadding)
         .padding(.top, Layout.contentTopGap)
         .padding(.bottom, Layout.sectionGap)
@@ -567,7 +572,7 @@ struct PlaylistPage: View {
                 let name = draftTitle
                 newTitle = name
                 router.run {
-                    _ = try await InnerTubeClient.wooftube.editPlaylist(
+                    _ = try await InnerTubeClient.woofplay.editPlaylist(
                         playlistId: playlistId,
                         actions: [["action": "ACTION_SET_PLAYLIST_NAME", "playlistName": name]]
                     )

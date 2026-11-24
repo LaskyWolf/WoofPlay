@@ -72,6 +72,8 @@ final class Router {
     }
     /// The playlist the queue came from.
     private(set) var playlistTitle: String?
+    /// Confirms that a shared magnet link started downloading.
+    var torrentNotice: String?
     var actionMessage: String? {
         didSet {
             if let actionMessage { FileLog.shared.append("action", "WARNING", actionMessage) }
@@ -173,6 +175,8 @@ final class Router {
         stableVolume = defaults.bool(forKey: Self.stableVolumeKey)
         setUpRemoteCommands()
         player.onEnded = { [weak self] in self?.playNextAfterEnd() }
+        // Also resumes torrents left unfinished at the last launch.
+        TorrentStore.shared.onProblem = { [weak self] in self?.actionMessage = $0 }
     }
 
     /// For a tap on a video. History and other lists can show a Short as a normal video, so YouTube is asked first.
@@ -433,10 +437,17 @@ final class Router {
 
     /// A link from another app. Opening the app with no address is not an error.
     func receive(_ url: URL) {
-        if let link = YouTubeLink(url: url) {
+        if url.scheme == "magnet" || (url.scheme == "woofplay" && url.host == "magnet") {
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery ?? ""
+            if let magnet = URL(string: "magnet:?" + query), let problem = TorrentStore.shared.add(magnet) {
+                actionMessage = problem
+            } else {
+                torrentNotice = "The download continues while WoofPlay is open. Follow it in Library › Downloads."
+            }
+        } else if let link = YouTubeLink(url: url) {
             pendingLink = link
         } else if url.host?.isEmpty == false || !url.path.isEmpty {
-            actionMessage = "WoofTube can't open this link."
+            actionMessage = "WoofPlay can't open this link."
         }
     }
 
@@ -709,6 +720,7 @@ final class Router {
                     if selectedAudioTrack == nil { selectedAudioTrack = extras.tracks.first(where: \.isOriginal)?.id }
                     storyboard = extras.storyboard
                 }
+                if storyboard == nil { storyboard = stream.storyboard }
                 if storyboard == nil, !stream.isLive {
                     let found = await StreamLoader.storyboard(videoId: videoId)
                     guard !Task.isCancelled else { return }
@@ -778,7 +790,14 @@ final class Router {
     }
 
     private func loadDetails(videoId: String) async {
-        guard let json = try? await InnerTubeClient.wooftube.next(videoId: videoId) else {
+        // A file from the phone has no YouTube page: the watch page shows just its title.
+        if videoId.hasPrefix(DownloadStore.localPrefix) { detailsUnavailable = true; return }
+        let fetched = try? await InnerTubeClient.woofplay.next(videoId: videoId)
+        if let fetched { await DownloadStore.shared.keepDetails(fetched, of: videoId) }
+        // A saved video keeps its details for when there's no connection.
+        var saved: [String: Any]?
+        if fetched == nil { saved = await DownloadStore.shared.savedDetails(of: videoId) }
+        guard let json = fetched ?? saved else {
             if current?.videoId == videoId { detailsUnavailable = true }
             return
         }
@@ -857,7 +876,7 @@ final class Router {
 extension CommentsPage {
     /// YouTube sorts comments by relevance first, so this is the one it would show.
     static func topComment(token: String?) async -> Comment? {
-        guard let token, let json = try? await InnerTubeClient.wooftube.next(continuation: token) else { return nil }
+        guard let token, let json = try? await InnerTubeClient.woofplay.next(continuation: token) else { return nil }
         guard let item = CommentsParser.parseCommentsPage(json).items.first else { return nil }
         return Comment(item, extras: CommentExtras.all(in: json)[item.id])
     }

@@ -81,7 +81,7 @@ struct YouTubeAPIError: LocalizedError {
 /// for are sent from here with the same headers as its WEB client.
 enum YouTubeAPI {
     static func post(_ endpoint: String, body: [String: Any]) async throws -> [String: Any] {
-        let auth = await InnerTubeClient.wooftube.currentAuth()
+        let auth = await InnerTubeClient.woofplay.currentAuth()
         let client = YouTubeClient.web
 
         var clientContext: [String: Any] = [
@@ -171,7 +171,7 @@ enum YouTubeAPI {
     static func ping(_ url: URL) async throws {
         guard isYouTube(url) else { throw URLError(.badURL) }
         var request = URLRequest(url: url)
-        signIn(&request, auth: await InnerTubeClient.wooftube.currentAuth())
+        signIn(&request, auth: await InnerTubeClient.woofplay.currentAuth())
         _ = try await URLSession.shared.data(for: request, delegate: NoRedirects())
     }
 
@@ -187,7 +187,7 @@ enum YouTubeAPI {
     }
 
     static func setLike(_ status: String, videoId: String) async throws {
-        let tube = InnerTubeClient.wooftube
+        let tube = InnerTubeClient.woofplay
         switch status {
         case "LIKE": _ = try await tube.like(videoId: videoId)
         case "DISLIKE": _ = try await tube.dislike(videoId: videoId)

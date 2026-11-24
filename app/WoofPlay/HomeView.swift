@@ -11,7 +11,7 @@ enum FeedSource: Hashable {
     case hashtag(String)
 
     func fetch() async throws -> [String: Any] {
-        let tube = InnerTubeClient.wooftube
+        let tube = InnerTubeClient.woofplay
         switch self {
         case .browse(let id, let params):
             return try await tube.browse(browseId: id, params: params)
@@ -179,7 +179,7 @@ final class FeedModel {
         let generation = loadGeneration
         isLoading = true
         defer { if generation == loadGeneration { isLoading = false } }
-        let tube = InnerTubeClient.wooftube
+        let tube = InnerTubeClient.woofplay
         // A page of Home can hold only seen videos, and an empty result would stop the scrolling.
         for _ in 0...Self.pagesToSkip {
             guard let token = nextToken else { return }
@@ -228,7 +228,7 @@ final class FeedModel {
         var fresh = SeenVideos.removing(from: page)
         var skipped = 0
         while fresh.count < Self.freshRowsWanted, skipped < Self.pagesToSkip, let token = nextToken,
-              let json = try? await InnerTubeClient.wooftube.browse(continuation: token) {
+              let json = try? await InnerTubeClient.woofplay.browse(continuation: token) {
             skipped += 1
             let (more, next) = await offMain { (FeedParser.items(in: json), FeedParser.continuation(in: json)) }
             nextToken = next
@@ -345,9 +345,21 @@ struct TabHeader: View {
 
     var body: some View {
         HStack(alignment: .center) {
-            Text(title)
-                .font(.largeTitle)
-                .fontWeight(.bold)
+            ZStack(alignment: .leading) {
+                if Connectivity.shared.isOffline {
+                    OfflineTitle()
+                        .transition(.asymmetric(
+                            insertion: .scale(scale: 0.7, anchor: .leading).combined(with: .opacity),
+                            removal: .opacity
+                        ))
+                } else {
+                    Text(title)
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .transition(.blurReplace)
+                }
+            }
+            .animation(UIAccessibility.isReduceMotionEnabled ? .easeOut(duration: 0.2) : .smooth(duration: 0.5), value: Connectivity.shared.isOffline)
             Spacer()
             // The targets are 44 pt, so a small gap keeps the icons as far apart as they look.
             HStack(spacing: Layout.cardSpacing) {
@@ -447,7 +459,8 @@ extension View {
         safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 TabHeader(title: title, onAdd: onAdd, incognito: incognito)
-                filters()
+                // Filters ask YouTube for a new page, which can't happen offline.
+                if !Connectivity.shared.isOffline { filters() }
             }
             .background {
                 LinearGradient(
@@ -520,21 +533,27 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            // The followed Twitch channels that are live, one after every five rows of YouTube's suggestions.
-            FeedContent(
-                model: model, retry: { await reload() }, keeps: showsStreams ? Self.isLive : nil, loading: .home,
-                hidesEmptyState: showsStreams && !twitchStreams.isEmpty,
-                mixedIn: selectedChip == nil ? twitchStreams : []
-            ) {
-                if showsStreams {
-                    // ponytail: Twitch first, then YouTube's live videos; YouTube's viewer counts are text, so the two aren't sorted together.
-                    ForEach(twitchStreams) { channel in
-                        TwitchStreamRow(channel: channel)
-                            .padding(.horizontal, Layout.screenPadding)
-                            .padding(.vertical, Layout.rowSpacing)
-                    }
+            Group {
+                if Connectivity.shared.isOffline {
+                    OfflineDownloads()
                 } else {
-                    JumpBackInCard(history: history)
+                    // The followed Twitch channels that are live, one after every five rows of YouTube's suggestions.
+                    FeedContent(
+                        model: model, retry: { await reload() }, keeps: showsStreams ? Self.isLive : nil, loading: .home,
+                        hidesEmptyState: showsStreams && !twitchStreams.isEmpty,
+                        mixedIn: selectedChip == nil ? twitchStreams : []
+                    ) {
+                        if showsStreams {
+                            // ponytail: Twitch first, then YouTube's live videos; YouTube's viewer counts are text, so the two aren't sorted together.
+                            ForEach(twitchStreams) { channel in
+                                TwitchStreamRow(channel: channel)
+                                    .padding(.horizontal, Layout.screenPadding)
+                                    .padding(.vertical, Layout.rowSpacing)
+                            }
+                        } else {
+                            JumpBackInCard(history: history)
+                        }
+                    }
                 }
             }
             .tabRoot(title: AppTab.home.title, tab: .home) {
@@ -554,6 +573,8 @@ struct HomeView: View {
             .task { if history.items.isEmpty { await history.load(.browse(YouTubeFeeds.history)) } }
             // Here and not in Jump Back In: an empty card draws nothing, so its task never ran.
             .task { await twitchLive.refresh() }
+            // Back online: the page loaded while offline only holds errors.
+            .onChange(of: Connectivity.shared.isOffline) { if !Connectivity.shared.isOffline { Task { await reload() } } }
             .onChange(of: scenePhase) {
                 // Control Center only makes the app inactive, which changes nothing.
                 if scenePhase == .background { wasInBackground = true }
@@ -696,7 +717,7 @@ private struct JumpBackInCard: View {
         }
         .buttonStyle(ZoomPressStyle(scale: 0.98))
         .accessibilityLabel("Resume \(main.video.title), \(timeLeft(main))")
-        .videoMenu(main.video, background: Color(.secondarySystemBackground))
+        .videoMenu(main.video, background: AnyShapeStyle(Color(.secondarySystemBackground)))
     }
 
     private func timeLeft(_ entry: (video: YouTubeVideo, extras: VideoExtras)) -> String {
@@ -1139,7 +1160,7 @@ struct FeedRows: View {
         do {
             model.remove(removal.item)
             router.run {
-                _ = try await InnerTubeClient.wooftube.editPlaylist(
+                _ = try await InnerTubeClient.woofplay.editPlaylist(
                     playlistId: playlistId,
                     actions: [["action": "ACTION_REMOVE_VIDEO", "setVideoId": setVideoId]]
                 )
@@ -2286,7 +2307,7 @@ private enum ShortAvatars {
         if let url = known[videoId] { return url }
         // Scrolling past a shelf cancels this before it costs a request.
         try? await Task.sleep(for: .milliseconds(300))
-        guard !Task.isCancelled, let json = try? await InnerTubeClient.wooftube.next(videoId: videoId),
+        guard !Task.isCancelled, let json = try? await InnerTubeClient.woofplay.next(videoId: videoId),
               let url = await offMain({ WatchDetails(json: json, videoId: videoId).channelAvatar }) else { return nil }
         known[videoId] = url
         return url

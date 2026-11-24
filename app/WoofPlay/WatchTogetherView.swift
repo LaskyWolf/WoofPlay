@@ -125,7 +125,7 @@ struct WatchTogetherView: View {
             }
             .padding(.vertical, Layout.cardSpacing)
             if let code = room.roomCode {
-                ShareLink(item: "Watch with me on WoofTube. Room code: \(code)") {
+                ShareLink(item: "Watch with me on WoofPlay. Room code: \(code)") {
                     Label("Share Room Code", systemImage: "square.and.arrow.up")
                 }
             }

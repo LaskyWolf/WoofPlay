@@ -239,6 +239,9 @@ struct WatchPage: View {
         .offset(y: pullDistance)
         .statusBarHidden(isFullscreen)
         .persistentSystemOverlays(isFullscreen ? .hidden : .automatic)
+        // The timeline sits on the bottom edge in full screen, where a sideways swipe switches apps.
+        // This makes iOS ask for a second swipe there, so scrubbing never leaves the app.
+        .defersSystemGestures(on: isFullscreen ? .bottom : [])
         .sheet(isPresented: $showsComments) {
             if let token = router.details?.commentsToken {
                 CommentsSheet(token: token)
@@ -785,7 +788,7 @@ private struct BarSegments: Shape {
 private struct StoryboardPreview: View {
     let storyboard: Storyboard
     let seconds: Double
-    private static let width: CGFloat = 128
+    static let width: CGFloat = 160
 
     var body: some View {
         let frame = storyboard.frame(at: seconds)
@@ -815,6 +818,7 @@ private struct PlayerProgress: View {
     private static let timeDrop: CGFloat = 5
     @State private var position = 0.0
     @State private var isEditing = false
+    @State private var barWidth: CGFloat = 0
 
     var body: some View {
         let total = max(duration, 1)
@@ -878,12 +882,24 @@ private struct PlayerProgress: View {
             }
         }
         // Above the bar without taking up room, so the controls don't move while scrubbing.
+        // It follows the finger along the bar, as on YouTube, and stops at the edges.
         .overlay(alignment: .top) {
             if isEditing, let storyboard {
-                StoryboardPreview(storyboard: storyboard, seconds: position * total)
-                    .alignmentGuide(.top) { $0[.bottom] }
+                let half = StoryboardPreview.width / 2
+                let x = min(max(position * barWidth, half), max(barWidth - half, half)) - barWidth / 2
+                VStack(spacing: 4) {
+                    StoryboardPreview(storyboard: storyboard, seconds: position * total)
+                    Text((position * total).clockText)
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.6), radius: 3)
+                }
+                .alignmentGuide(.top) { $0[.bottom] }
+                .offset(x: x)
+                .allowsHitTesting(false)
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { barWidth = $0 }
         .sensoryFeedback(.selection, trigger: chapter?.start) { _, _ in isEditing }
     }
 
@@ -990,15 +1006,22 @@ private struct PlayerControls: View {
     @State private var hideTask: Task<Void, Never>?
     @State private var seekHint: SeekHint?
     @State private var showsSpinner = false
-    @State private var showsUpNext = false
+    /// Full screen's floating card. Outside full screen, the sleep timer and Watch Together open as sheets.
+    @State private var panel: Panel?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private func setUpNext(_ isShown: Bool) {
+    private enum Panel { case upNext, sleepTimer, watchTogether }
+
+    private func setPanel(_ shown: Panel?) {
         withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .snappy) {
-            showsUpNext = isShown
-            if isShown { showsControls = false }
+            panel = shown
+            if shown != nil { showsControls = false }
         }
-        if isShown { hideTask?.cancel() }
+        if shown != nil { hideTask?.cancel() }
+    }
+
+    private func openSleepTimer() {
+        if isFullscreen { setPanel(.sleepTimer) } else { showsSleepTimer = true }
     }
 
     /// Nothing to show yet, so the spinner appears at once.
@@ -1015,7 +1038,7 @@ private struct PlayerControls: View {
         ZStack {
             PlayerTouchSurface(
                 onTap: {
-                    guard !showsUpNext else { return setUpNext(false) }
+                    guard panel == nil else { return setPanel(nil) }
                     withAnimation(.easeOut(duration: 0.15)) { showsControls.toggle() }
                     scheduleHide()
                 },
@@ -1033,9 +1056,9 @@ private struct PlayerControls: View {
                 },
                 onDragEnded: { translation in
                     if translation.height < -Self.upNextDistance {
-                        setUpNext(true)
+                        setPanel(.upNext)
                     } else if translation.height > Self.exitFullscreenDistance {
-                        if showsUpNext { setUpNext(false) } else { Orientation.setFullscreen(false) }
+                        if panel != nil { setPanel(nil) } else { Orientation.setFullscreen(false) }
                     }
                 },
                 isDragEnabled: isFullscreen,
@@ -1047,8 +1070,8 @@ private struct PlayerControls: View {
             .ignoresSafeArea(edges: isFullscreen ? .all : [])
 
             // Under the controls, as on YouTube, so the cards never cover a button.
-            if !showsControls && !showsUpNext && !router.endScreen.isEmpty {
-                EndScreenOverlay(clock: player.clock, elements: router.endScreen)
+            if !showsControls && panel == nil && !router.endScreen.isEmpty {
+                EndScreenOverlay(clock: player.clock, elements: router.endScreen, aspect: player.videoAspect, fills: isFullscreen && fillsScreen)
                     .transition(.opacity)
             }
             if isStarting || showsSpinner {
@@ -1058,13 +1081,20 @@ private struct PlayerControls: View {
                 controls.transition(.opacity)
             }
             // Read with the size class, so it goes in the same frame the player leaves full screen.
-            if showsUpNext && isFullscreen {
+            if let panel, isFullscreen {
                 Color.black.opacity(0.4)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                     .transition(.opacity)
-                UpNextPanel { setUpNext(false) }
+                Group {
+                    switch panel {
+                    case .upNext: UpNextPanel { setPanel(nil) }
+                    case .sleepTimer: SleepTimerPanel(timer: sleepTimer) { setPanel(nil) }
+                    case .watchTogether: WatchTogetherPanel { setPanel(nil) }
+                    }
+                }
                     .padding(.horizontal, Layout.cardSpacing)
+                    .padding(.top, Layout.rowSpacing)
                     .padding(.bottom, Layout.rowSpacing)
                     .frame(maxHeight: .infinity, alignment: .bottom)
                     .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
@@ -1104,12 +1134,12 @@ private struct PlayerControls: View {
         .sensoryFeedback(.selection, trigger: fillsScreen)
         // Felt on each double tap, since the eyes stay on the video.
         .sensoryFeedback(.impact(weight: .light), trigger: seekHint?.id) { _, new in new != nil }
-        .sensoryFeedback(.impact(weight: .light), trigger: showsUpNext)
+        .sensoryFeedback(.impact(weight: .light), trigger: panel)
         .sensoryFeedback(.impact(weight: .light), trigger: isFullscreen)
         .sensoryFeedback(.selection, trigger: player.speed)
         .sensoryFeedback(.selection, trigger: router.maxHeight)
-        .onChange(of: isFullscreen) { if !isFullscreen { showsUpNext = false } }
-        .accessibilityAction(named: "Up Next") { if isFullscreen { setUpNext(true) } }
+        .onChange(of: isFullscreen) { if !isFullscreen { panel = nil } }
+        .accessibilityAction(named: "Up Next") { if isFullscreen { setPanel(.upNext) } }
         .onAppear(perform: scheduleHide)
         .onChange(of: player.isPaused) { scheduleHide() }
         .task(id: isLoading) {
@@ -1128,7 +1158,7 @@ private struct PlayerControls: View {
                 Spacer()
                 if sleepTimer.isActive {
                     Button {
-                        showsSleepTimer = true
+                        openSleepTimer()
                     } label: {
                         Label {
                             Text("Sleep Timer")
@@ -1277,10 +1307,10 @@ private struct PlayerControls: View {
                 Button("Play on \(screen.name)", systemImage: "tv") { router.playOnTV() }
             }
             Button(sleepTimer.isActive ? "Sleep Timer · On" : "Sleep Timer…", systemImage: sleepTimer.isActive ? "moon.zzz.fill" : "moon.zzz") {
-                showsSleepTimer = true
+                openSleepTimer()
             }
             Button(WatchTogether.shared.roomCode.map { "Watch Together · \($0)" } ?? "Watch Together…", systemImage: "person.2.wave.2") {
-                showsWatchTogether = true
+                if isFullscreen { setPanel(.watchTogether) } else { showsWatchTogether = true }
             }
             if let summary = router.streamSummary {
                 Section(summary) {}
@@ -1314,33 +1344,24 @@ private struct PlayerControls: View {
 private struct UpNextPanel: View {
     let onClose: () -> Void
     @Environment(Router.self) private var router
+    @State private var showsPlaylist = false
 
     private static let cardWidth = Layout.videoMedium
-    private static let radius: CGFloat = 24
 
+    /// What's left of the playlist, in order. Its next episode comes first in the row.
+    private var playlist: [YouTubeVideo] { router.queue }
+
+    /// YouTube's suggestions, without what the playlist already lines up.
     private var videos: [YouTubeVideo] {
-        (router.details?.related ?? []).filter { !$0.isShort }
+        let inPlaylist = Set(playlist.map(\.videoId))
+        return (router.details?.related ?? []).filter { !$0.isShort && !inPlaylist.contains($0.videoId) }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Layout.chipSpacing) {
-                Text("Up Next")
-                    .font(.title2.bold())
-                Spacer(minLength: 0)
-                autoplayPill
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .contentShape(.circle)
-                }
-                .accessibilityLabel("Close Up Next")
-            }
-            .padding(.leading, 20)
-            .padding(.trailing, Layout.cardSpacing)
-            .padding(.top, Layout.cardSpacing)
-            if videos.isEmpty {
+        PlayerPanel(title: "Up Next", onClose: onClose) {
+            autoplayPill
+        } content: {
+            if videos.isEmpty && playlist.isEmpty {
                 Text("Nothing to suggest yet.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -1348,6 +1369,15 @@ private struct UpNextPanel: View {
             } else {
                 ScrollView(.horizontal) {
                     LazyHStack(alignment: .top, spacing: Layout.rowSpacing) {
+                        if let next = playlist.first {
+                            playlistButton(next)
+                            if playlist.count > 1 {
+                                playlistToggle
+                                if showsPlaylist {
+                                    ForEach(playlist.dropFirst(), id: \.videoId) { playlistButton($0) }
+                                }
+                            }
+                        }
                         ForEach(videos, id: \.videoId) { video in
                             Button {
                                 router.play(video, expand: false)
@@ -1369,12 +1399,31 @@ private struct UpNextPanel: View {
                 .padding(.bottom, 16)
             }
         }
-        .foregroundStyle(.white)
-        .glassEffect(.regular, in: .rect(cornerRadius: Self.radius))
-        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
-            if value.translation.height > 60, abs(value.translation.height) > abs(value.translation.width) { onClose() }
-        })
-        .accessibilityAction(.escape, onClose)
+    }
+
+    private func playlistButton(_ video: YouTubeVideo) -> some View {
+        Button {
+            router.playFromQueue(video)
+            onClose()
+        } label: {
+            card(video)
+        }
+        .buttonStyle(ZoomPressStyle())
+    }
+
+    /// Opens the rest of the playlist between its next episode and YouTube's suggestions.
+    private var playlistToggle: some View {
+        Button {
+            withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : .snappy) { showsPlaylist.toggle() }
+        } label: {
+            Image(systemName: showsPlaylist ? "chevron.left" : "chevron.right")
+                .font(.title3.weight(.semibold))
+                .frame(width: 44, height: Self.cardWidth / Layout.videoAspect)
+                .background(.white.opacity(0.12), in: .capsule)
+                .contentShape(.capsule)
+        }
+        .buttonStyle(ZoomPressStyle())
+        .accessibilityLabel(showsPlaylist ? "Hide Playlist" : "Show \(playlist.count - 1) More from \(router.playlistTitle ?? "the Queue")")
     }
 
     /// Woof Music's queue pills: brighter when on.
@@ -1430,6 +1479,77 @@ private struct UpNextPanel: View {
                 .padding(.top, Layout.cardSpacing)
         }
         .frame(width: Self.cardWidth)
+    }
+}
+
+/// Full screen's sleep timer: the wheel with its buttons beside it, so it fits the landscape height.
+private struct SleepTimerPanel: View {
+    @ObservedObject var timer: SleepTimer
+    let onClose: () -> Void
+
+    var body: some View {
+        PlayerPanel(title: "Sleep Timer", onClose: onClose) {
+            EmptyView()
+        } content: {
+            SleepTimerControls(timer: timer, isWide: true, onDone: onClose)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
+        }
+        .frame(maxWidth: 560)
+    }
+}
+
+/// Full screen's Watch Together: the same list as the sheet, on the panel's glass.
+private struct WatchTogetherPanel: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        PlayerPanel(title: "Watch Together", onClose: onClose) {
+            EmptyView()
+        } content: {
+            WatchTogetherView()
+                .scrollContentBackground(.hidden)
+                .padding(.bottom, Layout.chipSpacing)
+        }
+        .frame(maxWidth: 560)
+    }
+}
+
+/// Full screen's floating glass card, shared by Up Next, the sleep timer and Watch Together. A swipe down closes it.
+private struct PlayerPanel<Accessory: View, Content: View>: View {
+    let title: String
+    let onClose: () -> Void
+    @ViewBuilder let accessory: Accessory
+    @ViewBuilder let content: Content
+
+    private static var radius: CGFloat { 24 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Layout.chipSpacing) {
+                Text(title)
+                    .font(.title2.bold())
+                Spacer(minLength: 0)
+                accessory
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(.circle)
+                }
+                .accessibilityLabel("Close \(title)")
+            }
+            .padding(.leading, 20)
+            .padding(.trailing, Layout.cardSpacing)
+            .padding(.top, Layout.cardSpacing)
+            content
+        }
+        .foregroundStyle(.white)
+        .glassEffect(.regular, in: .rect(cornerRadius: Self.radius))
+        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
+            if value.translation.height > 60, abs(value.translation.height) > abs(value.translation.width) { onClose() }
+        })
+        .accessibilityAction(.escape, onClose)
     }
 }
 
@@ -1543,7 +1663,7 @@ private struct WatchDetailsView: View {
                     Text("Up Next")
                         .font(.title3.bold())
                         .padding(.top, Layout.chipSpacing)
-                    UpNextList(videos: details.related, streams: twitchLive.channels + twitchLive.suggested)
+                    UpNextList(videos: details.related.filter { video in !router.queue.contains { $0.videoId == video.videoId } }, streams: twitchLive.channels + twitchLive.suggested)
                 }
             }
         }
@@ -1632,10 +1752,10 @@ private struct WatchDetailsView: View {
                                     router.openChannelPage(creator.channelId)
                                 }
                                 Button("Follow", systemImage: "person.badge.plus") {
-                                    router.run { _ = try await InnerTubeClient.wooftube.subscribe(channelId: creator.channelId) }
+                                    router.run { _ = try await InnerTubeClient.woofplay.subscribe(channelId: creator.channelId) }
                                 }
                                 Button("Unfollow", systemImage: "person.badge.minus") {
-                                    router.run { _ = try await InnerTubeClient.wooftube.unsubscribe(channelId: creator.channelId) }
+                                    router.run { _ = try await InnerTubeClient.woofplay.unsubscribe(channelId: creator.channelId) }
                                 }
                             } label: {
                                 Text(creator.name)
@@ -1955,7 +2075,8 @@ private struct QueueCard: View {
                         CompactVideoRow(video: video)
                     }
                     .buttonStyle(ZoomPressStyle(scale: 0.98))
-                    .videoMenu(video)
+                    // The card is material, so a solid color behind each row showed as a black block.
+                    .videoMenu(video, background: AnyShapeStyle(.ultraThinMaterial))
                 }
             }
             if router.queue.count > Self.collapsedCount {
@@ -2045,7 +2166,7 @@ struct SubscribeButton: View {
         onChange(target)
         Subscriptions.shared.setSubscribed(channelId, target)
         Task {
-            let tube = InnerTubeClient.wooftube
+            let tube = InnerTubeClient.woofplay
             do {
                 _ = target ? try await tube.subscribe(channelId: channelId) : try await tube.unsubscribe(channelId: channelId)
             } catch {
@@ -2336,7 +2457,7 @@ struct ChannelView: View {
     /// Opens on Videos, because a channel's Home tab repeats the other tabs in rows.
     private func load() async {
         defer { isLoading = false }
-        guard page == nil, let json = try? await InnerTubeClient.wooftube.browse(browseId: channelId) else { return }
+        guard page == nil, let json = try? await InnerTubeClient.woofplay.browse(browseId: channelId) else { return }
         page = await offMain { YouTubeChannelParser.channelPage(in: json) }
         avatar = Self.avatarURL(in: json)
         let pageText = await offMain { (try? JSONSerialization.data(withJSONObject: json)).map { String(decoding: $0, as: UTF8.self) } ?? "" }

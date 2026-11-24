@@ -167,7 +167,7 @@ final class CommentsModel: ObservableObject {
     }
 
     private func page(_ token: String, replies: Bool = false) async throws -> Page {
-        let json = try await InnerTubeClient.wooftube.next(continuation: token)
+        let json = try await InnerTubeClient.woofplay.next(continuation: token)
         return await offMain {
             let extras = CommentExtras.all(in: json)
             if replies {
@@ -320,7 +320,7 @@ final class CommentsModel: ObservableObject {
         var key = request.panel.flowStateEntityKey
         var route = (flowId: request.panel.flowId, targetId: request.panel.targetId)
         guard var abuse = state["abuseReportFlowState"] as? [String: Any] else {
-            errorText = "YouTube's report form changed, so WoofTube can't send it."
+            errorText = "YouTube's report form changed, so WoofPlay can't send it."
             return
         }
         abuse["reasonKey"] = reason.key
@@ -356,7 +356,7 @@ final class CommentsModel: ObservableObject {
                 case .signIn:
                     throw YouTubeAPIError(errorDescription: "Sign in to report comments.")
                 default:
-                    throw YouTubeAPIError(errorDescription: "YouTube's report form changed, so WoofTube can't send it.")
+                    throw YouTubeAPIError(errorDescription: "YouTube's report form changed, so WoofPlay can't send it.")
                 }
             }
             throw YouTubeAPIError(errorDescription: "YouTube didn't finish the report.")

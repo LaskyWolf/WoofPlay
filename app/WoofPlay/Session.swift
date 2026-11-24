@@ -24,7 +24,7 @@ final class Session: ObservableObject {
     @Published private(set) var generation = 0
     private var currentAuth = AuthState.guest
 
-    private let store = SecureStore(service: "com.laskywolf.wooftube.session")
+    private let store = SecureStore(service: "com.laskywolf.woofplay.session")
     private let key = "auth"
     private let accountsKey = "accounts"
     private static let accountRetryDelay = Duration.seconds(2)
@@ -55,7 +55,7 @@ final class Session: ObservableObject {
             return
         }
         currentAuth = auth
-        await InnerTubeClient.wooftube.updateAuth(auth)
+        await InnerTubeClient.woofplay.updateAuth(auth)
         isSignedIn = true
         isRestoring = false
         await refreshIfStale(auth)
@@ -67,7 +67,7 @@ final class Session: ObservableObject {
     func signIn(_ auth: AuthState) async {
         account = nil
         save(auth)
-        await InnerTubeClient.wooftube.updateAuth(auth)
+        await InnerTubeClient.woofplay.updateAuth(auth)
         isSignedIn = true
         await fillVisitorData()
         await loadAccount()
@@ -85,7 +85,7 @@ final class Session: ObservableObject {
         unseenNotifications = 0
         save(saved.auth)
         // Before the storage, so a queued download never starts with the previous account's sign-in.
-        await InnerTubeClient.wooftube.updateAuth(saved.auth)
+        await InnerTubeClient.woofplay.updateAuth(saved.auth)
         openStorage(of: saved.id)
         await refreshIfStale(saved.auth)
         await fillVisitorData()
@@ -152,11 +152,11 @@ final class Session: ObservableObject {
         var auth = currentAuth
         auth.visitorData = visitorData
         save(auth)
-        await InnerTubeClient.wooftube.updateAuth(auth)
+        await InnerTubeClient.woofplay.updateAuth(auth)
     }
 
     func loadAccount() async {
-        account = try? await InnerTubeClient.wooftube.accountInfo()
+        account = try? await InnerTubeClient.woofplay.accountInfo()
         rememberCurrentAccount()
     }
 
@@ -190,7 +190,7 @@ final class Session: ObservableObject {
             return
         }
         try? store.delete(for: key)
-        await InnerTubeClient.wooftube.updateAuth(.guest)
+        await InnerTubeClient.woofplay.updateAuth(.guest)
         currentAuth = .guest
         isSignedIn = false
         account = nil
@@ -202,7 +202,7 @@ final class Session: ObservableObject {
     /// Google rotates its tokens, and a stale session answers as a guest instead of failing.
     /// A network error says nothing about the session, so it changes nothing here.
     private func refreshIfStale(_ auth: AuthState) async {
-        let tube = InnerTubeClient.wooftube
+        let tube = InnerTubeClient.woofplay
         guard let isValid = try? await tube.verifySession(), !isValid else { return }
         let reissued = await SessionTokenRefresher.shared.refreshRotatedTokens(baseCookies: auth.cookies)
         guard !reissued.isEmpty else {
@@ -233,7 +233,7 @@ final class Session: ObservableObject {
     }
 
     private func renew() async -> Bool {
-        let tube = InnerTubeClient.wooftube
+        let tube = InnerTubeClient.woofplay
         var auth = currentAuth
         if isSignedIn {
             let reissued = await SessionTokenRefresher.shared.refreshRotatedTokens(baseCookies: auth.cookies)

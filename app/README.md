@@ -1,6 +1,6 @@
-# WoofTube native app
+# WoofPlay native app
 
-A SwiftUI YouTube client.
+A SwiftUI player for YouTube, Twitch, your own video files and torrents.
 
 ## Build
 
@@ -9,10 +9,11 @@ Building needs Xcode 26. Linux users can use the `Native app` GitHub Actions wor
 On a Mac:
 
 ```bash
-brew install xcodegen
+brew install xcodegen cmake ninja boost
 cd app
+Torrent/build.sh
 xcodegen generate
-open WoofTube.xcodeproj
+open WoofPlay.xcodeproj
 ```
 
 ## Account risk
@@ -21,7 +22,7 @@ Google can challenge or restrict an account used in an unofficial app, and posti
 
 ## Twitch
 
-WoofTube plays Twitch live channels and takes Twitch's ads out of the stream. This breaks Twitch's Terms of Service.
+WoofPlay plays Twitch live channels and takes Twitch's ads out of the stream. This breaks Twitch's Terms of Service.
 
 Signing in needs your own Twitch app: register one at [dev.twitch.tv/console](https://dev.twitch.tv/console) with the **Public** client type and paste its Client ID in the sign-in sheet.
 

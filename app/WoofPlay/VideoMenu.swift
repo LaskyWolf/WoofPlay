@@ -4,7 +4,7 @@ import SwiftyTube
 extension View {
     /// The long press menu. Same layout as Woof Music: actions row, queue, then the rest.
     /// `background` is what's behind the view; nil is for a view that fills its own shape.
-    func videoMenu(_ video: YouTubeVideo, feedback: [FeedbackAction] = [], collaborators: [Collaborator] = [], background: Color? = Color(.systemBackground), onRemove: (() -> Void)? = nil, onRemoveFromPlaylist: (() -> Void)? = nil) -> some View {
+    func videoMenu(_ video: YouTubeVideo, feedback: [FeedbackAction] = [], collaborators: [Collaborator] = [], background: AnyShapeStyle? = AnyShapeStyle(Color(.systemBackground)), onRemove: (() -> Void)? = nil, onRemoveFromPlaylist: (() -> Void)? = nil) -> some View {
         modifier(VideoMenuModifier(video: video, feedback: feedback, collaborators: collaborators, background: background, onRemove: onRemove, onRemoveFromPlaylist: onRemoveFromPlaylist))
     }
 
@@ -12,7 +12,7 @@ extension View {
     /// background matches what's behind the view, so it only shows once the view is lifted.
     /// The margin goes back after the menu, so the layout doesn't change.
     @ViewBuilder
-    func liftedMenu<Items: View>(background: Color? = Color(.systemBackground), @ViewBuilder items: () -> Items) -> some View {
+    func liftedMenu<Items: View>(background: AnyShapeStyle? = AnyShapeStyle(Color(.systemBackground)), @ViewBuilder items: () -> Items) -> some View {
         if let background {
             let shape = RoundedRectangle(cornerRadius: Layout.tileRadius, style: .continuous)
             padding(Layout.rowPadding)
@@ -30,7 +30,7 @@ private struct VideoMenuModifier: ViewModifier {
     let video: YouTubeVideo
     let feedback: [FeedbackAction]
     let collaborators: [Collaborator]
-    let background: Color?
+    let background: AnyShapeStyle?
     let onRemove: (() -> Void)?
     let onRemoveFromPlaylist: (() -> Void)?
     @Environment(Router.self) private var router
@@ -66,7 +66,7 @@ struct VideoMenuItems: View {
     var body: some View {
         ControlGroup {
             Button("Like", systemImage: "hand.thumbsup") {
-                router.run { _ = try await InnerTubeClient.wooftube.like(videoId: video.videoId) }
+                router.run { _ = try await InnerTubeClient.woofplay.like(videoId: video.videoId) }
             }
             Button("Add to Playlist", systemImage: "text.badge.plus") { showsPlaylists = true }
             if let url = URL(string: "https://www.youtube.com/watch?v=\(video.videoId)") {
@@ -156,14 +156,14 @@ struct PlaylistOption: Identifiable {
 
 enum PlaylistActions {
     static func add(_ videoId: String, to playlistId: String) async throws {
-        _ = try await InnerTubeClient.wooftube.editPlaylist(
+        _ = try await InnerTubeClient.woofplay.editPlaylist(
             playlistId: playlistId,
             actions: [["action": "ACTION_ADD_VIDEO", "addedVideoId": videoId]]
         )
     }
 
     static func remove(_ videoId: String, from playlistId: String) async throws {
-        _ = try await InnerTubeClient.wooftube.editPlaylist(
+        _ = try await InnerTubeClient.woofplay.editPlaylist(
             playlistId: playlistId,
             actions: [["action": "ACTION_REMOVE_VIDEO_BY_VIDEO_ID", "removedVideoId": videoId]]
         )
@@ -251,7 +251,7 @@ struct PlaylistPickerSheet: View {
     /// YouTube says which playlists have the video, and the Library page has their covers.
     private func load() async {
         let options = await PlaylistActions.options(for: video.videoId)
-        let json = try? await InnerTubeClient.wooftube.browse(browseId: "FEplaylist_aggregation")
+        let json = try? await InnerTubeClient.woofplay.browse(browseId: "FEplaylist_aggregation")
         let library = json.map { YouTubeFeedParser.playlists(in: $0) } ?? []
         if options.isEmpty {
             playlists = library.map { PlaylistOption(id: $0.playlistId, title: $0.title, thumbnail: $0.thumbnailURL, count: $0.videoCountText, containsVideo: false) }
@@ -277,7 +277,7 @@ struct PlaylistPickerSheet: View {
     private func createAndAdd() {
         let title = newTitle
         router.run {
-            let json = try await InnerTubeClient.wooftube.createPlaylist(title: title)
+            let json = try await InnerTubeClient.woofplay.createPlaylist(title: title)
             guard let id = JSON.string("playlistId", in: json) else { return }
             try await PlaylistActions.add(video.videoId, to: id)
             playlists.insert(PlaylistOption(id: id, title: title, count: "1 video", containsVideo: true), at: 0)

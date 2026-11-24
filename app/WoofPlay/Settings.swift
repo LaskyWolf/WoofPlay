@@ -261,7 +261,7 @@ private struct ProfileView: View {
                 LabeledContent("Version", value: "\(AppUpdate.currentVersion) (\(AppUpdate.currentBuild))")
                 if let release = AppUpdate.shared.available {
                     Link(destination: release.page) {
-                        Label("WoofTube \(release.version) Is Available", systemImage: "arrow.down.app")
+                        Label("WoofPlay \(release.version) Is Available", systemImage: "arrow.down.app")
                     }
                 } else {
                     Button {

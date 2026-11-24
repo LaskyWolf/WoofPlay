@@ -1,7 +1,7 @@
 import UIKit
 import UniformTypeIdentifiers
 
-/// Hands a shared YouTube link to WoofTube by opening it with the app's own scheme.
+/// Hands a shared YouTube link to WoofPlay by opening it with the app's own scheme.
 final class ShareViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -25,21 +25,28 @@ final class ShareViewController: UIViewController {
     }
 
     private static func firstLink(in text: String) -> URL? {
+        // The link detector doesn't know magnet links.
+        if let start = text.range(of: "magnet:?") {
+            let magnet = text[start.lowerBound...].prefix { !$0.isWhitespace }
+            return URL(string: String(magnet))
+        }
         let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
         return detector?.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))?.url
     }
 
-    /// wooftube://www.youtube.com/watch?v=… reads like the web address, so the app parses it the same way.
+    /// woofplay://www.youtube.com/watch?v=… reads like the web address, so the app parses it the same way.
     private static func appLink(for url: URL) -> URL? {
         guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        // Sent as woofplay://magnet?…, so another torrent app can't take it.
+        if parts.scheme == "magnet" { return URL(string: "woofplay://magnet?" + (parts.percentEncodedQuery ?? "")) }
         guard parts.scheme == "https" || parts.scheme == "http" else { return url }
-        parts.scheme = "wooftube"
+        parts.scheme = "woofplay"
         return parts.url
     }
 
     /// An extension can't reach UIApplication.shared, but the app object is still at the end of the responder chain.
     /// Its open method is off limits to extension code, so it's looked up by name at run time.
-    // ponytail: not an official API. If iOS stops passing the link on, copy it and paste it in WoofTube's search instead.
+    // ponytail: not an official API. If iOS stops passing the link on, copy it and paste it in WoofPlay's search instead.
     private func open(_ url: URL) {
         typealias Open = @convention(c) (AnyObject, Selector, NSURL, NSDictionary, AnyObject?) -> Void
         let selector = NSSelectorFromString("openURL:options:completionHandler:")

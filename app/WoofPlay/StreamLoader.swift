@@ -20,6 +20,8 @@ struct LoadedStream: @unchecked Sendable {
     var channelId: String?
     /// A video YouTube only gives in SABR segments. Downloads read the segments from here.
     var sabr: SABRMedia?
+    /// The preview frames for scrubbing, when the stream's own answer had them.
+    var storyboard: Storyboard?
 }
 
 struct AudioTrack: Identifiable, Hashable {
@@ -90,7 +92,7 @@ enum StreamLoader {
 
     /// Fields SwiftyTube's typed response leaves out. Loaded after playback starts, so they don't delay it.
     static func extras(videoId: String, client: YouTubeClient) async -> (tracks: [AudioTrack], storyboard: Storyboard?) {
-        guard let json = try? await InnerTubeClient.wooftube.player(videoId: videoId, client: client) else { return ([], nil) }
+        guard let json = try? await InnerTubeClient.woofplay.player(videoId: videoId, client: client) else { return ([], nil) }
         let formats = JSON.first("adaptiveFormats", in: json) as? [[String: Any]] ?? []
         var best: [String: (bitrate: Int, track: AudioTrack)] = [:]
         for format in formats {
@@ -162,13 +164,13 @@ enum StreamLoader {
 
     /// The clients tried first for streams can return no storyboard, so this asks the iOS client.
     static func storyboard(videoId: String) async -> Storyboard? {
-        guard let json = try? await InnerTubeClient.wooftube.player(videoId: videoId, client: .iOS) else { return nil }
+        guard let json = try? await InnerTubeClient.woofplay.player(videoId: videoId, client: .iOS) else { return nil }
         return JSON.string("spec", in: json["storyboards"]).flatMap(Storyboard.init(spec:))
     }
 
     /// The clients tried first for streams can return no captions at all, so these come from the iOS client.
     static func captions(videoId: String) async -> [YouTubeCaptionTrack] {
-        let response: PlayerResponse? = try? await InnerTubeClient.wooftube.playerResponse(videoId: videoId, client: .iOS, options: PlayerRequestOptions(signatureTimestamp: nil))
+        let response: PlayerResponse? = try? await InnerTubeClient.woofplay.playerResponse(videoId: videoId, client: .iOS, options: PlayerRequestOptions(signatureTimestamp: nil))
         return response.map { YouTubeWatchParser.captionTracks(from: $0) } ?? []
     }
 
@@ -254,7 +256,7 @@ enum StreamLoader {
     /// `StreamFallback.resolveVideo` returns a 360p combined stream whenever one
     /// exists, so this looks for separate video and audio first.
     private static func resolve(videoId: String, maxHeight: Int) async throws -> LoadedStream {
-        let tube = InnerTubeClient.wooftube
+        let tube = InnerTubeClient.woofplay
         var providers = StreamResolveProviders.live
         providers.poTokenProvider = { id in
             try? await PoTokenGenerator.shared.generate(videoId: id, sessionId: sessionId)
@@ -360,7 +362,7 @@ enum StreamLoader {
     /// The web client's video through SABR: YouTube hands it out in segments, asked one request at a time,
     /// and the app's local server gives them to mpv as HLS.
     private static func sabr(videoId: String, maxHeight: Int, providers: StreamResolveProviders) async throws -> LoadedStream {
-        let tube = InnerTubeClient.wooftube
+        let tube = InnerTubeClient.woofplay
         // YouTube currently binds the web client's tokens to the video.
         let videoToken = try? await PoTokenGenerator.shared.generate(videoId: videoId, sessionId: nil).streamingDataPoToken
         let timestamp = await providers.signatureTimestamp?()
@@ -423,7 +425,8 @@ enum StreamLoader {
             title: details?["title"] as? String,
             channelTitle: details?["author"] as? String,
             channelId: details?["channelId"] as? String,
-            sabr: media
+            sabr: media,
+            storyboard: JSON.string("spec", in: json["storyboards"]).flatMap(Storyboard.init(spec:))
         )
     }
 }

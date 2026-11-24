@@ -1,4 +1,4 @@
-name: WoofTube
+name: WoofPlay
 options:
   bundleIdPrefix: com.laskywolf
   deploymentTarget:
@@ -19,58 +19,64 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.6.1"
-    CURRENT_PROJECT_VERSION: "30"
+    MARKETING_VERSION: "1.7"
+    CURRENT_PROJECT_VERSION: "31"
     TARGETED_DEVICE_FAMILY: "1"
 targets:
-  WoofTube:
+  WoofPlay:
     type: application
     platform: iOS
     scheme: {}
     sources:
-      - path: WoofTube
+      - path: WoofPlay
     dependencies:
       - package: SwiftyTube
       - package: MPVKit
         product: MPVKit-GPL
-      - target: WoofTubeShare
+      - target: WoofPlayShare
+      # Built by Torrent/build.sh. A static library, so nothing is embedded.
+      - framework: Torrent/TorrentNative.xcframework
+        embed: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.laskywolf.wooftube.native
+        PRODUCT_BUNDLE_IDENTIFIER: com.laskywolf.woofplay
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "Amber Brown Cyan Green Indigo Lime Orange Pink Purple Red Teal"
     info:
-      path: WoofTube/Info.plist
+      path: WoofPlay/Info.plist
       properties:
-        CFBundleDisplayName: WoofTube
+        CFBundleDisplayName: WoofPlay
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         CFBundleURLTypes:
-          - CFBundleURLName: com.laskywolf.wooftube.links
+          - CFBundleURLName: com.laskywolf.woofplay.links
             CFBundleURLSchemes:
-              - wooftube
+              - woofplay
               - youtube
               - vnd.youtube
+          - CFBundleURLName: com.laskywolf.woofplay.magnet
+            CFBundleURLSchemes:
+              - magnet
         UIBackgroundModes:
           - audio
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-  # Adds WoofTube to the share sheet for YouTube links.
-  WoofTubeShare:
+  # Adds WoofPlay to the share sheet for YouTube and magnet links.
+  WoofPlayShare:
     type: app-extension
     platform: iOS
     sources:
       - path: ShareExtension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.laskywolf.wooftube.native.share
+        PRODUCT_BUNDLE_IDENTIFIER: com.laskywolf.woofplay.share
     info:
       path: ShareExtension/Info.plist
       properties:
-        CFBundleDisplayName: WoofTube
+        CFBundleDisplayName: WoofPlay
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:

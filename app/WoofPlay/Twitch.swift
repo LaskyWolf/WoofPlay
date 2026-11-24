@@ -463,7 +463,7 @@ final class TwitchAccount: ObservableObject {
     private var userId: String?
     @Published private var token: Token?
 
-    private let store = SecureStore(service: "com.laskywolf.wooftube.twitch")
+    private let store = SecureStore(service: "com.laskywolf.woofplay.twitch")
     private static let tokenKey = "token"
     private static let clientIdKey = "twitchClientId"
     private static let scopes = "chat:read chat:edit user:read:follows"

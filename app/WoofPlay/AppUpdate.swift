@@ -17,7 +17,7 @@ final class AppUpdate {
     private(set) var didCheck = false
     private(set) var errorText: String?
 
-    private static let latestRelease = URL(string: "https://api.github.com/repos/LaskyWolf/WoofTube/releases/latest")!
+    private static let latestRelease = URL(string: "https://api.github.com/repos/LaskyWolf/WoofPlay/releases/latest")!
 
     static var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"

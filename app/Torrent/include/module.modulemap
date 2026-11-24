@@ -1,0 +1,7 @@
+module TorrentNative {
+    header "TorrentNative.h"
+    link "c++"
+    link framework "CoreFoundation"
+    link framework "SystemConfiguration"
+    export *
+}

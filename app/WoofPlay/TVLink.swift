@@ -49,7 +49,7 @@ final class TVLink {
         guard let json = try? JSONSerialization.jsonObject(with: Data(tokens.utf8)) as? [String: Any],
               let token = (json["screens"] as? [[String: Any]])?.first?["loungeToken"] as? String else { throw TVLinkError.noAnswer(0) }
         let bind = try await Self.send("bc/bind", query: ["RID": "0", "VER": "8", "CVER": "1"], form: [
-            "device": "REMOTE_CONTROL", "id": Self.deviceId, "name": "WoofTube",
+            "device": "REMOTE_CONTROL", "id": Self.deviceId, "name": "WoofPlay",
             "mdx-version": "3", "pairing_type": "cast", "app": "android-phone-13.14.55"
         ], token: token)
         guard let session = Self.session(in: bind) else { throw TVLinkError.noAnswer(0) }

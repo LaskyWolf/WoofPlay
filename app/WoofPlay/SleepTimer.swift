@@ -45,62 +45,12 @@ final class SleepTimer: ObservableObject {
 struct SleepTimerSheet: View {
     @ObservedObject var timer: SleepTimer
     @Environment(\.dismiss) private var dismiss
-    @State private var duration: TimeInterval
     @State private var contentHeight: CGFloat = 0
 
-    private static let lastMinutesKey = "sleepTimerLastMinutes"
-    private static let defaultMinutes = 15
-
-    init(timer: SleepTimer) {
-        self.timer = timer
-        let saved = UserDefaults.standard.integer(forKey: Self.lastMinutesKey)
-        let minutes = timer.minutes ?? (saved > 0 ? saved : Self.defaultMinutes)
-        _duration = State(initialValue: TimeInterval(minutes * 60))
-    }
-
     var body: some View {
-        let minutes = Int(duration / 60)
         VStack(spacing: 20) {
             Text("Sleep Timer").font(.headline)
-
-            if timer.stopsAtVideoEnd {
-                Label("Stops when this video ends", systemImage: "moon.zzz.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.tint)
-            } else if let end = timer.endsAt {
-                Label {
-                    Text(timerInterval: Date()...max(end, Date()), countsDown: true)
-                } icon: {
-                    Image(systemName: "moon.zzz.fill")
-                }
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.tint)
-            }
-
-            CountdownPicker(duration: $duration)
-                .frame(maxWidth: .infinity)
-
-            HStack {
-                roundButton("Cancel", icon: "xmark", isAccent: false) { timer.cancel() }
-                    .disabled(!timer.isActive)
-                Spacer()
-                roundButton("Start", icon: "play.fill", isAccent: true) {
-                    UserDefaults.standard.set(minutes, forKey: Self.lastMinutesKey)
-                    timer.start(minutes: minutes)
-                    dismiss()
-                }
-                .disabled(minutes < 1)
-            }
-
-            Button {
-                timer.stopAtVideoEnd()
-                dismiss()
-            } label: {
-                Label("End of Video", systemImage: "play.rectangle")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
+            SleepTimerControls(timer: timer, isWide: false) { dismiss() }
         }
         .padding(20)
         // Below the sheet's handle.
@@ -110,6 +60,93 @@ struct SleepTimerSheet: View {
         // Taller than the medium size, which pushed the title under the handle.
         .presentationDetents(contentHeight > 0 ? [.height(contentHeight)] : [.large])
         .presentationDragIndicator(.visible)
+    }
+}
+
+/// The countdown wheel and its buttons. Wide puts the buttons beside the wheel, for the landscape player.
+struct SleepTimerControls: View {
+    @ObservedObject var timer: SleepTimer
+    let isWide: Bool
+    let onDone: () -> Void
+    @State private var duration: TimeInterval
+
+    private static let lastMinutesKey = "sleepTimerLastMinutes"
+    private static let defaultMinutes = 15
+
+    init(timer: SleepTimer, isWide: Bool, onDone: @escaping () -> Void) {
+        self.timer = timer
+        self.isWide = isWide
+        self.onDone = onDone
+        let saved = UserDefaults.standard.integer(forKey: Self.lastMinutesKey)
+        let minutes = timer.minutes ?? (saved > 0 ? saved : Self.defaultMinutes)
+        _duration = State(initialValue: TimeInterval(minutes * 60))
+    }
+
+    private var minutes: Int { Int(duration / 60) }
+
+    var body: some View {
+        if isWide {
+            HStack(spacing: 20) {
+                CountdownPicker(duration: $duration)
+                    .frame(maxWidth: .infinity)
+                VStack(spacing: 16) {
+                    status
+                    buttons
+                    endOfVideo
+                }
+                .frame(maxWidth: .infinity)
+            }
+        } else {
+            VStack(spacing: 20) {
+                status
+                CountdownPicker(duration: $duration)
+                    .frame(maxWidth: .infinity)
+                buttons
+                endOfVideo
+            }
+        }
+    }
+
+    @ViewBuilder private var status: some View {
+        if timer.stopsAtVideoEnd {
+            Label("Stops when this video ends", systemImage: "moon.zzz.fill")
+                .font(.subheadline)
+                .foregroundStyle(.tint)
+        } else if let end = timer.endsAt {
+            Label {
+                Text(timerInterval: Date()...max(end, Date()), countsDown: true)
+            } icon: {
+                Image(systemName: "moon.zzz.fill")
+            }
+            .font(.subheadline.monospacedDigit())
+            .foregroundStyle(.tint)
+        }
+    }
+
+    private var buttons: some View {
+        HStack {
+            roundButton("Cancel", icon: "xmark", isAccent: false) { timer.cancel() }
+                .disabled(!timer.isActive)
+            Spacer()
+            roundButton("Start", icon: "play.fill", isAccent: true) {
+                UserDefaults.standard.set(minutes, forKey: Self.lastMinutesKey)
+                timer.start(minutes: minutes)
+                onDone()
+            }
+            .disabled(minutes < 1)
+        }
+    }
+
+    private var endOfVideo: some View {
+        Button {
+            timer.stopAtVideoEnd()
+            onDone()
+        } label: {
+            Label("End of Video", systemImage: "play.rectangle")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
     }
 
     /// The Clock app's round timer button.

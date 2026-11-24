@@ -158,7 +158,7 @@ final class Subscriptions {
         if let json = try? await YouTubeAPI.post("guide", body: [:]) {
             found = Self.guideChannels(in: JSON.first("guideSubscriptionsSectionRenderer", in: json) ?? [String: Any]())
         }
-        if found.isEmpty, let json = try? await InnerTubeClient.wooftube.browse(browseId: "FEchannels") {
+        if found.isEmpty, let json = try? await InnerTubeClient.woofplay.browse(browseId: "FEchannels") {
             found = FeedParser.items(in: json).compactMap {
                 if case .channel(let channel) = $0 { return channel }
                 return nil

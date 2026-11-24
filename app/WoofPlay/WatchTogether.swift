@@ -20,7 +20,7 @@ final class WatchTogether {
     nonisolated static let defaultServerURL = "wss://metroserverx.meowery.eu/ws"
     nonisolated static let serverKey = "watchTogether.serverURL"
     nonisolated static let usernameKey = "watchTogether.username"
-    nonisolated static let fallbackName = "WoofTube viewer"
+    nonisolated static let fallbackName = "WoofPlay viewer"
 
     enum Status: Equatable {
         case idle
@@ -217,9 +217,9 @@ final class WatchTogether {
         }
         pendingRequest = request
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-        let connection = WatchTogetherConnection(url: url, userAgent: "WoofTube/\(version) (iOS)")
+        let connection = WatchTogetherConnection(url: url, userAgent: "WoofPlay/\(version) (iOS)")
         self.connection = connection
-        connection.send(LTMessage.clientCapabilities, LTClientCapabilities(clientVersion: "WoofTube \(version)", features: Self.features))
+        connection.send(LTMessage.clientCapabilities, LTClientCapabilities(clientVersion: "WoofPlay \(version)", features: Self.features))
         listenTask = Task { [weak self] in
             for await event in connection.events {
                 guard let self, self.connection === connection else { return }

@@ -17,6 +17,8 @@ final class MpvPlayer: ObservableObject {
     /// False until the new video draws its first frame. The layer keeps the old frame until then.
     @Published private(set) var isVideoReady = false
     @Published private(set) var duration: Double = 0
+    /// The picture's width over its height, so overlays can sit on the picture itself.
+    @Published private(set) var videoAspect = Double(Layout.videoAspect)
     @Published private(set) var isPaused = false
     @Published private(set) var isBuffering = false
     @Published private(set) var errorText: String?
@@ -43,7 +45,7 @@ final class MpvPlayer: ObservableObject {
     private var loadedURL: String?
     private(set) var hasEnded = false
 
-    private let queue = DispatchQueue(label: "com.laskywolf.wooftube.mpv")
+    private let queue = DispatchQueue(label: "com.laskywolf.woofplay.mpv")
     private var mpv: OpaquePointer?
     private var videoEnabled = true
     private var decoderResets = 0
@@ -264,6 +266,7 @@ final class MpvPlayer: ObservableObject {
         mpv_observe_property(mpv, 1, "duration", MPV_FORMAT_DOUBLE)
         mpv_observe_property(mpv, 2, "pause", MPV_FORMAT_FLAG)
         mpv_observe_property(mpv, 3, "paused-for-cache", MPV_FORMAT_FLAG)
+        mpv_observe_property(mpv, 4, "video-params/aspect", MPV_FORMAT_DOUBLE)
         self.mpv = mpv
 
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -429,6 +432,8 @@ final class MpvPlayer: ObservableObject {
                 } else if property.format == MPV_FORMAT_DOUBLE, let value = property.data?.load(as: Double.self), value.isFinite {
                     if name == "duration" {
                         player?.publish { $0.duration = value }
+                    } else if name == "video-params/aspect" {
+                        if value > 0 { player?.publish { $0.videoAspect = value } }
                     } else if Int(value * ticksPerSecond) != lastTick {
                         lastTick = Int(value * ticksPerSecond)
                         player?.publish {

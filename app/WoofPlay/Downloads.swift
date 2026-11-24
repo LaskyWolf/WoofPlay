@@ -2,6 +2,7 @@ import Combine
 import Network
 import SwiftUI
 import SwiftyTube
+import UniformTypeIdentifiers
 
 enum DownloadSettings {
     static let wifiOnlyKey = "downloads.wifiOnly"
@@ -255,6 +256,8 @@ final class DownloadStore: ObservableObject {
     /// The local stream for mpv, or nil when the video isn't saved.
     func stream(videoId: String) -> String? {
         guard let item = items.first(where: { $0.id == videoId }) else { return nil }
+        // A file added from the phone holds picture and sound together.
+        if item.audioFile.isEmpty { return Self.folder.appending(path: item.videoFile).path }
         return StreamFallback.combineVideoAndAudio(
             videoURL: Self.folder.appending(path: item.videoFile).path,
             audioURL: Self.folder.appending(path: item.audioFile).path,
@@ -262,12 +265,67 @@ final class DownloadStore: ObservableObject {
         )
     }
 
+    /// The watch page's answer for a saved video: description, chapters, likes and channel, for when there's no connection.
+    private static func detailsFile(of videoId: String) -> URL { folder.appending(path: videoId + "-details.json") }
+
+    /// Kept for saved videos only. Each online visit refreshes it, which also fills in videos saved before this existed.
+    func keepDetails(_ json: [String: Any], of videoId: String) async {
+        guard isDownloaded(videoId) else { return }
+        let file = Self.detailsFile(of: videoId)
+        await offMain { try? JSONSerialization.data(withJSONObject: json).write(to: file, options: .atomic) }
+    }
+
+    func savedDetails(of videoId: String) async -> [String: Any]? {
+        guard isDownloaded(videoId) else { return nil }
+        let file = Self.detailsFile(of: videoId)
+        return await offMain { (try? Data(contentsOf: file)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } }
+    }
+
+    /// Right after a video is saved, so its details are there even if it's never opened online.
+    private func fetchDetails(of videoId: String) {
+        Task {
+            guard let json = try? await InnerTubeClient.woofplay.next(videoId: videoId) else { return }
+            await keepDetails(json, of: videoId)
+        }
+    }
+
     func delete(_ item: Item) {
         try? FileManager.default.removeItem(at: Self.folder.appending(path: item.videoFile))
-        try? FileManager.default.removeItem(at: Self.folder.appending(path: item.audioFile))
+        if !item.audioFile.isEmpty { try? FileManager.default.removeItem(at: Self.folder.appending(path: item.audioFile)) }
+        try? FileManager.default.removeItem(at: Self.detailsFile(of: item.id))
         items.removeAll { $0.id == item.id }
         save()
     }
+
+    /// Copies video or audio files picked from the phone into the downloads folder, so they play like saved videos.
+    /// `moving` takes files the app already owns, such as finished torrents, without a copy.
+    func addFiles(_ urls: [URL], moving: Bool = false) {
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let id = Self.localPrefix + UUID().uuidString
+            let file = url.pathExtension.isEmpty ? id : id + "." + url.pathExtension
+            do {
+                if moving {
+                    try FileManager.default.moveItem(at: url, to: Self.folder.appending(path: file))
+                } else {
+                    try FileManager.default.copyItem(at: url, to: Self.folder.appending(path: file))
+                }
+            } catch {
+                FileLog.shared.append("downloads", "WARN", "add file failed: \(error.localizedDescription)")
+                continue
+            }
+            let title = url.deletingPathExtension().lastPathComponent
+            items.insert(Item(video: YouTubeVideo(videoId: id, title: title), videoFile: file, audioFile: ""), at: 0)
+        }
+        save()
+    }
+
+    /// mpv plays Matroska and WebM too, which iOS doesn't count as movies.
+    static let importTypes: [UTType] = [.audiovisualContent] + ["mkv", "webm"].compactMap { UTType(filenameExtension: $0) }
+
+    /// Files added from the phone have no YouTube page behind them.
+    static let localPrefix = "local-"
 
     // MARK: The queue
 
@@ -376,6 +434,7 @@ final class DownloadStore: ObservableObject {
         lastReport = "Last download: \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) in \(Int(Date().timeIntervalSince(started))) s (SABR)"
         items.insert(Item(video: video, videoFile: files[0].1, audioFile: files[1].1), at: 0)
         save()
+        fetchDetails(of: video.videoId)
     }
 
     /// A whole file in one request when YouTube doesn't say how big it is.
@@ -509,6 +568,7 @@ final class DownloadStore: ObservableObject {
                 lastReport = "Last download: \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) in \(Int(seconds)) s"
                 items.insert(Item(video: job.video, videoFile: job.videoFile, audioFile: job.audioFile), at: 0)
                 save()
+                fetchDetails(of: job.video.videoId)
                 isJoining = false
                 end(failure: nil)
             } catch {
@@ -611,7 +671,7 @@ private final class DownloadSession: NSObject, URLSessionDownloadDelegate {
     static let shared = DownloadSession()
 
     private lazy var session: URLSession = {
-        let id = (Bundle.main.bundleIdentifier ?? "wooftube") + ".downloads"
+        let id = (Bundle.main.bundleIdentifier ?? "woofplay") + ".downloads"
         let configuration = URLSessionConfiguration.background(withIdentifier: id)
         configuration.isDiscretionary = false
         configuration.sessionSendsLaunchEvents = true
@@ -823,6 +883,8 @@ struct DownloadsView: View {
     @ObservedObject private var store = DownloadStore.shared
     @Environment(Router.self) private var router
     @State private var confirmsRemoveAll = false
+    @State private var importsFiles = false
+    @ObservedObject private var torrents = TorrentStore.shared
 
     private var videos: [YouTubeVideo] { store.items.map(\.video) }
     private var cover: String? { videos.first.map { YouTubeVideo.cover(of: $0.videoId) } }
@@ -838,7 +900,7 @@ struct DownloadsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if store.items.isEmpty, store.active.isEmpty, store.waiting.isEmpty {
+                if store.items.isEmpty, store.active.isEmpty, store.waiting.isEmpty, torrents.jobs.isEmpty {
                     ContentUnavailableView {
                         Label("No Downloads Yet", systemImage: "arrow.down.to.line")
                     } description: {
@@ -850,6 +912,14 @@ struct DownloadsView: View {
                     .padding(.vertical, 48)
                 } else {
                     header
+                }
+                if !torrents.jobs.isEmpty {
+                    SectionTitle(title: "Torrents", count: torrents.jobs.count)
+                    ForEach(torrents.jobs) { job in
+                        TorrentRow(job: job, status: torrents.statuses[job.id]) { torrents.cancel(job) }
+                            .padding(.horizontal, Layout.screenPadding)
+                            .padding(.vertical, Layout.rowPadding)
+                    }
                 }
                 if !store.active.isEmpty || !store.waiting.isEmpty {
                     SectionTitle(title: "Downloading", count: store.active.count + store.waiting.count)
@@ -894,6 +964,7 @@ struct DownloadsView: View {
         .toolbar(.visible, for: .navigationBar)
         .toolbar {
             Menu("More", systemImage: "ellipsis") {
+                Button("Add Files…", systemImage: "folder.badge.plus") { importsFiles = true }
                 Button("Add to Queue", systemImage: "text.append") {
                     for video in videos { router.addToQueue(video) }
                 }
@@ -909,6 +980,7 @@ struct DownloadsView: View {
                 .disabled(videos.isEmpty)
             }
         }
+        .addFilesImporter(isPresented: $importsFiles)
         .confirmationDialog("Remove All Downloads?", isPresented: $confirmsRemoveAll, titleVisibility: .visible) {
             Button("Remove All", role: .destructive) { store.deleteAll() }
         } message: {
@@ -918,6 +990,54 @@ struct DownloadsView: View {
 
     private var header: some View {
         VideoListHeader(meta: meta, title: "Downloads", cover: cover, videos: videos) { router.playAll(videos) }
+    }
+}
+
+extension View {
+    /// The phone's file picker for video and audio files, copied into Downloads.
+    func addFilesImporter(isPresented: Binding<Bool>) -> some View {
+        fileImporter(isPresented: isPresented, allowedContentTypes: DownloadStore.importTypes, allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { DownloadStore.shared.addFiles(urls) }
+        }
+    }
+}
+
+/// A torrent in progress: its name, how far along it is, and a button to stop it.
+private struct TorrentRow: View {
+    let job: TorrentStore.Job
+    let status: TorrentStore.Status?
+    let onCancel: () -> Void
+
+    private var title: String {
+        guard let name = status?.name, !name.isEmpty else { return "Magnet Link" }
+        return name
+    }
+
+    private var detail: String {
+        guard let status else { return "Starting" }
+        if let error = status.error, !error.isEmpty { return error }
+        if status.state == "metadata" { return "Finding the file list · \(status.peers) peers" }
+        let rate = ByteCountFormatter.string(fromByteCount: Int64(status.rate), countStyle: .file)
+        return "\(Int(status.progress * 100))% · \(rate)/s · \(status.peers) peers"
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Layout.rowSpacing) {
+            VStack(alignment: .leading, spacing: Layout.chipSpacing) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                ProgressView(value: status?.progress ?? 0)
+                Text(detail)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Button("Cancel", systemImage: "xmark.circle.fill", role: .destructive, action: onCancel)
+                .labelStyle(.iconOnly)
+                .font(.title2)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

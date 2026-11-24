@@ -75,6 +75,9 @@ struct EndScreenElement: Identifiable, Equatable {
         assert(found.count == 2)
         assert(found[0].target == .video("abc") && found[0].start == 100 && !found[0].isRound)
         assert(found[1].target == .channel("UC1") && found[1].isRound)
+        let size = CGSize(width: 200, height: 100)
+        assert(EndScreenOverlay.picture(aspect: 1, fills: false, in: size) == CGRect(x: 50, y: 0, width: 100, height: 100))
+        assert(EndScreenOverlay.picture(aspect: 1, fills: true, in: size) == CGRect(x: 0, y: -50, width: 200, height: 200))
     }
 }
 
@@ -82,6 +85,9 @@ struct EndScreenElement: Identifiable, Equatable {
 struct EndScreenOverlay: View {
     @ObservedObject var clock: PlayerClock
     let elements: [EndScreenElement]
+    /// The video's own shape, and whether a pinch made it fill the screen.
+    let aspect: Double
+    let fills: Bool
     @Environment(Router.self) private var router
 
     private var shown: [EndScreenElement] {
@@ -90,8 +96,7 @@ struct EndScreenOverlay: View {
 
     var body: some View {
         GeometryReader { proxy in
-            // ponytail: assumes a 16:9 picture; a 4:3 video in full screen puts the cards a little off.
-            let picture = AVMakeRect(aspectRatio: CGSize(width: 16, height: 9), insideRect: CGRect(origin: .zero, size: proxy.size))
+            let picture = Self.picture(aspect: aspect, fills: fills, in: proxy.size)
             ForEach(shown) { element in
                 let width = picture.width * element.width
                 Button { open(element) } label: {
@@ -106,6 +111,16 @@ struct EndScreenOverlay: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: shown)
+    }
+
+    /// Where the picture is drawn: fitted with black bars, or grown until it covers the screen.
+    static func picture(aspect: Double, fills: Bool, in size: CGSize) -> CGRect {
+        let fit = AVMakeRect(aspectRatio: CGSize(width: aspect, height: 1), insideRect: CGRect(origin: .zero, size: size))
+        guard fills, fit.width > 0, fit.height > 0 else { return fit }
+        let scale = max(size.width / fit.width, size.height / fit.height)
+        let width = fit.width * scale
+        let height = fit.height * scale
+        return CGRect(x: (size.width - width) / 2, y: (size.height - height) / 2, width: width, height: height)
     }
 
     private func card(_ element: EndScreenElement) -> some View {

@@ -2,11 +2,11 @@ import SwiftUI
 import SwiftyTube
 
 extension InnerTubeClient {
-    static let wooftube = InnerTubeClient(config: .youtube)
+    static let woofplay = InnerTubeClient(config: .youtube)
 }
 
 @main
-struct WoofTubeApp: App {
+struct WoofPlayApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var session = Session()
     @State private var router = Router()
@@ -32,7 +32,7 @@ struct WoofTubeApp: App {
                 SwiftyTubeLog.handler = { message, level in
                     if level == .error { FileLog.shared.append("swiftytube", "ERROR", message) }
                 }
-                await InnerTubeClient.wooftube.updateLocale(YouTubeLocale(
+                await InnerTubeClient.woofplay.updateLocale(YouTubeLocale(
                     gl: Locale.current.region?.identifier ?? "US",
                     hl: Locale.current.language.languageCode?.identifier ?? "en"
                 ))
@@ -130,6 +130,11 @@ extension View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(router.actionMessage ?? "")
+        }
+        .alert("Torrent Started", isPresented: Binding(get: { isActive && router.torrentNotice != nil }, set: { if !$0 { router.torrentNotice = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(router.torrentNotice ?? "")
         }
     }
 }

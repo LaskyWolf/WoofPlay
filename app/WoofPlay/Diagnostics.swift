@@ -6,7 +6,7 @@ import SwiftyTube
 final class FileLog {
     static let shared = FileLog()
 
-    private let queue = DispatchQueue(label: "com.laskywolf.wooftube.log")
+    private let queue = DispatchQueue(label: "com.laskywolf.woofplay.log")
     private let maxBytes = 1_000_000
     /// Only touched on `queue`.
     private var handle: FileHandle?
@@ -155,7 +155,7 @@ struct DiagnosticsView: View {
         isCheckingAccount = true
         defer { isCheckingAccount = false }
         do {
-            let info = try await InnerTubeClient.wooftube.accountInfo()
+            let info = try await InnerTubeClient.woofplay.accountInfo()
             accountCheck = info.name.isEmpty || info.name == "Guest" ? "Guest menu (session not recognised)" : "OK, \(info.name)"
         } catch {
             accountCheck = "Failed: \(error.localizedDescription)"
@@ -223,7 +223,7 @@ struct DiagnosticsSection: Identifiable {
 
     @MainActor
     private static func account(_ session: Session) async -> DiagnosticsSection {
-        let auth = await InnerTubeClient.wooftube.currentAuth()
+        let auth = await InnerTubeClient.woofplay.currentAuth()
         return DiagnosticsSection(title: "Account", rows: [
             Row(label: "Signed In", value: session.isSignedIn ? "Yes" : "No"),
             Row(label: "Name", value: session.isSignedIn ? session.account?.name ?? "Unknown" : "–"),
