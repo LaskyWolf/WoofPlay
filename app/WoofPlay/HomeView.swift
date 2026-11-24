@@ -535,7 +535,7 @@ struct HomeView: View {
         NavigationStack {
             Group {
                 if Connectivity.shared.isOffline {
-                    OfflineDownloads()
+                    OfflinePage()
                 } else {
                     FeedContent(
                         model: model, retry: { await reload() },

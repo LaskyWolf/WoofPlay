@@ -84,7 +84,7 @@ struct QuickPicksSection: View {
                     .accessibilityHidden(true)
                 }
             }
-            .padding(.vertical, Layout.rowSpacing)
+            .padding(.bottom, Layout.sectionGap)
         }
     }
 

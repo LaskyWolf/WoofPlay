@@ -426,13 +426,13 @@ enum LibraryPlaylists {
     }
 }
 
-private extension Color {
+extension Color {
     static let lime = Color(red: 0.48, green: 0.74, blue: 0.08)
     static let violet = Color(red: 0.55, green: 0.36, blue: 0.96)
 }
 
 /// Woof Music's shortcut tile: two fanned covers over a large symbol the corner crops.
-private struct ShortcutTile: View {
+struct ShortcutTile: View {
     let title: String
     let subtitle: String?
     let icon: String

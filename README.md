@@ -37,7 +37,7 @@
 - Downloaded videos keep their description, chapters and channel for offline viewing
 - Your own video and audio files: long press Downloads in Library and choose Add Files
 - Torrents: share a magnet link to WoofPlay and its video and audio files land in Downloads
-- Offline mode: without a connection, Home shows your downloads and a sleeping pup takes the title
+- Offline mode: without a connection, Home shows your downloads and Signal Catch, a minigame where the pup catches Wi-Fi bars, while a sleeping pup takes the title
 - Several Google accounts and a Twitch account
 - Watch Together, and playback on a TV
 - Accent colours that also change the app icon

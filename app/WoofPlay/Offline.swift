@@ -1,5 +1,6 @@
 import Network
 import SwiftUI
+import SwiftyTube
 
 /// Whether the phone can reach the internet. iOS doesn't tell apps about airplane mode itself,
 /// so a dead zone and airplane mode look the same here, which is what the app needs.
@@ -169,34 +170,46 @@ struct SleepingPup: View {
     }
 }
 
-/// Home while offline: what's saved on the phone, which plays without a connection.
-struct OfflineDownloads: View {
+/// Home while offline, the only page then, with the tab bar hidden: a game to pass the time,
+/// then Library's shortcuts. Downloads opens what's saved on the phone; the other two need a connection.
+struct OfflinePage: View {
     @ObservedObject private var store = DownloadStore.shared
 
+    /// How faded a shortcut that can't open offline is.
+    private static let unavailableOpacity = 0.45
+
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if store.items.isEmpty {
-                    ContentUnavailableView {
-                        Label("Nothing Saved Yet", systemImage: "arrow.down.circle")
-                    } description: {
-                        Text("Videos you download play here without a connection. Home comes back when you're online.")
-                    }
-                    .padding(.vertical, 48)
-                } else {
-                    SectionTitle(title: "Downloads", count: store.items.count)
-                    Text("Home comes back by itself when you're online again.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, Layout.screenPadding)
-                        .padding(.bottom, Layout.chipSpacing)
-                    ForEach(store.items) { item in
-                        VideoButton(video: item.video, isCompact: true)
-                            .padding(.horizontal, Layout.screenPadding)
-                            .padding(.vertical, Layout.rowPadding)
-                    }
+        // Doesn't scroll: the game takes all the height the shortcuts leave.
+        VStack(spacing: 0) {
+            SignalCatchCard()
+                .padding(.top, Layout.contentTopGap)
+                .frame(maxHeight: .infinity)
+            HStack(spacing: 10) {
+                unavailable(ShortcutTile(title: "Liked Videos", subtitle: "Online only", icon: "hand.thumbsup.fill", tint: .lime, covers: []))
+                unavailable(ShortcutTile(title: "Watch Later", subtitle: "Online only", icon: "clock.fill", tint: .yellow, covers: []))
+                ZoomLink(wholeLabel: true) {
+                    DownloadsView().toolbarVisibility(.hidden, for: .tabBar)
+                } label: {
+                    ShortcutTile(
+                        title: "Downloads",
+                        subtitle: store.items.isEmpty ? "Nothing saved" : "\(store.items.count) \(store.items.count == 1 ? "video" : "videos")",
+                        icon: "arrow.down.circle.fill",
+                        tint: .violet,
+                        covers: store.items.prefix(2).map { YouTubeVideo.cover(of: $0.video.videoId) }
+                    )
                 }
+                .buttonStyle(ZoomPressStyle())
             }
+            .padding(.horizontal, Layout.screenPadding)
+            .padding(.bottom, Layout.sectionGap)
         }
+        .toolbarVisibility(.hidden, for: .tabBar)
+    }
+
+    private func unavailable(_ tile: ShortcutTile) -> some View {
+        tile
+            .grayscale(1)
+            .opacity(Self.unavailableOpacity)
+            .accessibilityHint("Needs a connection")
     }
 }

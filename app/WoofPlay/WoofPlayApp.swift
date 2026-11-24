@@ -244,6 +244,10 @@ struct RootTabs: View {
         }
         .environment(\.layoutDirection, settings.leftHandedTabBar ? .rightToLeft : .leftToRight)
         .tabBarMinimizeBehavior(.onScrollDown)
+        // Offline, Explore is the only page and hides the tab bar, so the app goes there.
+        .onChange(of: Connectivity.shared.isOffline, initial: true) {
+            if Connectivity.shared.isOffline { router.selectedTab = .home }
+        }
         // Selecting Search activates it, and its X goes back to the previous tab.
         .tabViewSearchActivation(.searchTabSelection)
         .modifier(ResultFeedback())
