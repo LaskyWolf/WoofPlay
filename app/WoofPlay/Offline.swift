@@ -37,23 +37,44 @@ final class Connectivity {
     }
 }
 
-/// Takes the tab's title while offline: a pup asleep next to the word Offline.
-/// Where the header's buttons leave no room for the word on one line, the pup sleeps alone.
+/// Takes the tab's title while offline: a pup asleep next to the word Offline, on a grey badge
+/// that swells and settles with the pup's breath.
+/// Where the header's buttons leave no room for the word on one line, the pup sleeps alone on it.
 struct OfflineTitle: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var breathes = false
+
+    /// How much the badge grows on each breath in.
+    private static let breathScale = 1.035
+    private static let radius: CGFloat = 16
+
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 10) {
+            badge {
                 SleepingPup()
                 Text("Offline")
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
+                    .font(.title.weight(.heavy))
                     .lineLimit(1)
             }
-            SleepingPup()
+            badge { SleepingPup() }
+        }
+        .scaleEffect(breathes ? Self.breathScale : 1)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: SleepingPup.zCycle / 2).repeatForever(autoreverses: true)) { breathes = true }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Offline")
         .accessibilityAddTraits(.isHeader)
+    }
+
+    /// The grey of the filter chips, so the badge belongs to the app instead of looking like an alert.
+    private func badge<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(alignment: .center, spacing: 10) { content() }
+            .padding(.leading, 10)
+            .padding(.trailing, 16)
+            .padding(.vertical, 5)
+            .background(Color(.systemGray5), in: .rect(cornerRadius: Self.radius, style: .continuous))
     }
 }
 
@@ -65,7 +86,7 @@ struct SleepingPup: View {
 
     private static let size = CGSize(width: 64, height: 40)
     /// One z every this many seconds, three in the air at a time.
-    private static let zCycle = 3.2
+    static let zCycle = 3.2
 
     var body: some View {
         ZStack(alignment: .topLeading) {
