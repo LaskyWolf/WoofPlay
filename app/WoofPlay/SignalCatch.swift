@@ -31,7 +31,7 @@ struct SignalCatchCard: View {
             .clipShape(.rect(cornerRadius: Self.radius, style: .continuous))
             .coordinateSpace(.named(Self.space))
             // After the clip, so the confetti can fly out of the card.
-            .overlay(alignment: .topLeading) { confetti }
+            .overlay { confetti(time: time) }
         }
         // The pup's greys are drawn for a dark card, as on the Woof apps' offline badge in dark mode.
         .environment(\.colorScheme, .dark)
@@ -44,14 +44,14 @@ struct SignalCatchCard: View {
     private var header: some View {
         HStack {
             Text("Signal Catch")
-                .font(.title3.weight(.heavy))
+                .font(.title2.weight(.heavy))
             Spacer()
             Text("Best \(game.best)")
-                .font(.subheadline)
+                .font(.body)
                 .foregroundStyle(.secondary)
             HStack(spacing: 4) {
-                BoneShape().fill(.primary).frame(width: 16, height: 16)
-                Text("\(game.bones)").font(.subheadline.weight(.bold))
+                BoneShape().fill(.primary).frame(width: 20, height: 20)
+                Text("\(game.bones)").font(.headline)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(game.bones) bones")
@@ -67,24 +67,23 @@ struct SignalCatchCard: View {
                     GeometryReader { proxy in
                         Capsule()
                             .fill(settings.accentColor)
-                            .frame(width: proxy.size.width * min(1, Double(game.score) / Double(SignalCatchGame.goal)))
+                            .frame(width: proxy.size.width * game.meter)
                     }
                 }
-                .frame(height: 8)
-                .animation(.smooth(duration: 0.2), value: game.score)
+                .frame(height: 10)
                 .onGeometryChange(for: CGPoint.self) { proxy in
                     let frame = proxy.frame(in: .named(Self.space))
                     return CGPoint(x: frame.maxX, y: frame.midY)
                 } action: { game.confettiOrigin = $0 }
             if game.multiplier > 1 {
                 Text("×\(game.multiplier)")
-                    .font(.footnote.weight(.heavy))
+                    .font(.subheadline.weight(.heavy))
                     .foregroundStyle(settings.accentColor)
             }
             Text("\(game.score)")
-                .font(.subheadline.weight(.heavy))
+                .font(.headline.weight(.heavy))
             Text("\(Int(game.timeLeft.rounded(.up)))s")
-                .font(.subheadline)
+                .font(.body)
                 .foregroundStyle(.secondary)
         }
         .monospacedDigit()
@@ -116,7 +115,7 @@ struct SignalCatchCard: View {
         VStack(spacing: 6) {
             switch game.state {
             case .win:
-                Text("Full signal!").font(.system(size: 34, weight: .heavy))
+                Text("Full signal!").font(.system(size: 42, weight: .heavy))
                 HStack(spacing: 6) {
                     BoneShape().fill(.primary).frame(width: 20, height: 20)
                     Text("+1 bone")
@@ -128,11 +127,11 @@ struct SignalCatchCard: View {
                 Text("\(game.score) points. Good dog.")
                     .foregroundStyle(.secondary)
             case .lose:
-                Text("\(game.score)").font(.system(size: 34, weight: .heavy)).monospacedDigit()
+                Text("\(game.score)").font(.system(size: 42, weight: .heavy)).monospacedDigit()
                 Text("\(SignalCatchGame.goal - game.score) more for full signal. The pup believes in you.")
                     .foregroundStyle(.secondary)
             default:
-                Text("No signal?").font(.system(size: 34, weight: .heavy))
+                Text("No signal?").font(.system(size: 42, weight: .heavy))
                 Text("Help the pup sniff some out. Drag to move, catch the bars, dodge the clouds.")
                     .foregroundStyle(.secondary)
             }
@@ -152,15 +151,15 @@ struct SignalCatchCard: View {
         .background(.ultraThinMaterial)
     }
 
-    private var confetti: some View {
-        GeometryReader { proxy in
-            Canvas { context, _ in
-                context.translateBy(x: 0, y: Self.confettiRoom.height)
-                game.drawConfetti(in: context, accent: settings.accentColor)
-            }
-            .frame(width: proxy.size.width + Self.confettiRoom.width, height: proxy.size.height + Self.confettiRoom.height)
-            .offset(y: -Self.confettiRoom.height)
+    /// Bigger than the card by `confettiRoom` above and to the right. It uses `time`, so it redraws every frame.
+    private func confetti(time: Double) -> some View {
+        Canvas { context, _ in
+            _ = time
+            context.translateBy(x: 0, y: Self.confettiRoom.height)
+            game.drawConfetti(in: context, accent: settings.accentColor)
         }
+        .padding(.top, -Self.confettiRoom.height)
+        .padding(.trailing, -Self.confettiRoom.width)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -199,12 +198,20 @@ final class SignalCatchGame {
     /// How long each ending plays before the result card.
     private static let winTime = 3.0
     private static let loseTime = 2.2
-    /// The title pup is 64 × 40; the game pup is a little bigger.
-    private static let pupScale = 1.15
+    /// How much bigger than the mockup's 280 pt field the drawings are.
+    private static let artScale = 1.45
+    /// The title pup is 64 × 40; the game pup is bigger.
+    private static let pupScale = 1.15 * artScale
+    /// The mockup's field height; things fall at the same pace on any field.
+    private static let baseHeight = 280.0
     private static let pupWidth = 64 * pupScale
     /// Seconds into the win, when each lick starts, and how long it lasts.
     private static let licks = [0.6, 1.3]
     private static let lickTime = 0.55
+    /// Before each lick the head tilts, to one side and then the other, and straightens after it.
+    private static let tilt = 0.2
+    private static let tiltIn = 0.3
+    private static let tiltOut = 0.25
     private static let bestKey = "signalCatch.best"
     private static let bonesKey = "signalCatch.bones"
 
@@ -212,6 +219,8 @@ final class SignalCatchGame {
     private(set) var score = 0
     private(set) var timeLeft = round
     private(set) var showsResult = false
+    /// How full the meter looks, 0 to 1: it slides toward the score instead of jumping.
+    private(set) var meter = 0.0
     private(set) var best = UserDefaults.standard.integer(forKey: bestKey)
     private(set) var bones = UserDefaults.standard.integer(forKey: bonesKey)
     var size = CGSize.zero
@@ -232,7 +241,7 @@ final class SignalCatchGame {
         state = .play
         score = 0; timeLeft = Self.round; streak = 0; stun = 0; spawnIn = 0
         items = []; pops = []; smears = []; confetti = []
-        reached = false; showsResult = false
+        reached = false; showsResult = false; meter = 0
     }
 
     /// The pup follows the finger, a little behind it.
@@ -253,6 +262,7 @@ final class SignalCatchGame {
 
     private func update(_ dt: Double) {
         pupX += (targetX - pupX) * min(1, dt * (stun > 0 ? 4 : 14))
+        meter += (min(1, Double(score) / Double(Self.goal)) - meter) * min(1, dt * 10)
         switch state {
         case .play:
             timeLeft -= dt
@@ -279,7 +289,7 @@ final class SignalCatchGame {
                     }
                 }
             }
-            items.removeAll { $0.isDone || $0.y > height + 30 }
+            items.removeAll { $0.isDone || $0.y > height + 30 * Self.artScale }
             if timeLeft <= 0 { timeLeft = 0; end() }
         case .win, .lose:
             ending += dt
@@ -321,9 +331,10 @@ final class SignalCatchGame {
     /// The longer the run, the faster things fall and the more clouds there are.
     private func spawn() {
         let progress = 1 - timeLeft / Self.round
+        let margin = 20 * Self.artScale
         items.append(Item(
-            x: 20 + Double.random(in: 0...1) * (width - 40), y: -20,
-            speed: 120 + progress * 140 + Double.random(in: 0...40), wobble: Double.random(in: 0...6),
+            x: margin + Double.random(in: 0...1) * (width - margin * 2), y: -margin,
+            speed: (120 + progress * 140 + Double.random(in: 0...40)) * height / Self.baseHeight, wobble: Double.random(in: 0...6),
             isCloud: Double.random(in: 0...1) < 0.18 + progress * 0.2, bars: Int.random(in: 1...3)
         ))
         spawnIn = 0.45 - progress * 0.2
@@ -403,7 +414,7 @@ final class SignalCatchGame {
             popContext.opacity = min(1, pop.life)
             let color = pop.isBad ? Self.grey : pop.isBig ? .white : accent
             popContext.draw(
-                Text(pop.text).font(.system(size: pop.isBig ? 30 : 16, weight: .heavy)).foregroundStyle(color),
+                Text(pop.text).font(.system(size: pop.isBig ? 40 : 22, weight: .heavy)).foregroundStyle(color),
                 at: CGPoint(x: pop.x, y: pop.y), anchor: .bottom
             )
         }
@@ -425,6 +436,7 @@ final class SignalCatchGame {
     private func drawWifi(in base: GraphicsContext, x: Double, y: Double, bars: Int, tilt: Double, accent: Color) {
         var context = base
         context.translateBy(x: x, y: y)
+        context.scaleBy(x: Self.artScale, y: Self.artScale)
         context.rotate(by: .radians(tilt))
         for bar in 1...3 {
             var arc = Path()
@@ -438,6 +450,7 @@ final class SignalCatchGame {
     private func drawCloud(in base: GraphicsContext, x: Double, y: Double) {
         var context = base
         context.translateBy(x: x, y: y)
+        context.scaleBy(x: Self.artScale, y: Self.artScale)
         var cloud = circle(-9, 2, 8)
         cloud.addPath(circle(0, -3, 10))
         cloud.addPath(circle(10, 2, 8))
@@ -531,12 +544,12 @@ final class SignalCatchGame {
 
     /// Lost: the pup lies down in the middle and sobs, tears dripping into a growing puddle.
     private func drawLose(in context: GraphicsContext, time: Double, accent: Color) {
-        let scale = 1.7, x = width / 2, ground = height - 6
+        let scale = 1.7 * Self.artScale, x = width / 2, ground = height - 6
         let settle = ease(ending / 0.5)
         let pupAt = lerp(pupX, x, settle)
         let puddle = min(1, ending / 2)
         context.fill(
-            ellipse(pupAt - 30 * scale, ground, 8 + 26 * puddle, 3 + 2 * puddle),
+            ellipse(pupAt - 30 * scale, ground, (8 + 26 * puddle) * Self.artScale, (3 + 2 * puddle) * Self.artScale),
             with: .color(Color(red: 120 / 255, green: 170 / 255, blue: 1, opacity: 0.18 * puddle))
         )
         drawPup(in: context, x: pupAt, ground: ground, time: time, mood: settle < 1 ? .awake : .sad, scale: lerp(Self.pupScale, scale, settle), accent: accent)
@@ -545,11 +558,12 @@ final class SignalCatchGame {
         let eyeX = pupAt + (16.3 - 32) * scale, eyeY = ground + (24 - 38) * scale
         for index in 0..<3 {
             let t = (time + Double(index) * 0.45).truncatingRemainder(dividingBy: 1.35) / 1.35
-            let tearX = eyeX - 4 - t * 10, tearY = eyeY + t * t * 40
+            let a = Self.artScale
+            let tearX = eyeX - (4 + t * 10) * a, tearY = eyeY + t * t * 40 * a
             var tear = Path()
-            tear.move(to: CGPoint(x: tearX, y: tearY - 6))
-            tear.addQuadCurve(to: CGPoint(x: tearX, y: tearY + 3), control: CGPoint(x: tearX + 4, y: tearY))
-            tear.addQuadCurve(to: CGPoint(x: tearX, y: tearY - 6), control: CGPoint(x: tearX - 4, y: tearY))
+            tear.move(to: CGPoint(x: tearX, y: tearY - 6 * a))
+            tear.addQuadCurve(to: CGPoint(x: tearX, y: tearY + 3 * a), control: CGPoint(x: tearX + 4 * a, y: tearY))
+            tear.addQuadCurve(to: CGPoint(x: tearX, y: tearY - 6 * a), control: CGPoint(x: tearX - 4 * a, y: tearY))
             var tearContext = context
             tearContext.opacity = 1 - t * 0.6
             tearContext.fill(tear, with: .color(Color(hex: 0x8fc1ff)))
@@ -584,7 +598,14 @@ final class SignalCatchGame {
             let k = (t - start) / Self.lickTime
             if k >= 0, k <= 1 { flip = sin(k * .pi); lick = index }
         }
-        let tip = CGPoint(x: centre.x, y: centre.y + r * 0.27 + r * lerp(0.24, -0.08, flip))
+        var tilt = 0.0
+        for (index, start) in Self.licks.enumerated() {
+            let lean = ease((t - start + Self.tiltIn) / Self.tiltIn) * (1 - ease((t - start - Self.lickTime) / Self.tiltOut))
+            tilt += (index.isMultiple(of: 2) ? 1 : -1) * Self.tilt * lean
+        }
+        // The tongue tip, turned with the head
+        let reach = r * 0.27 + r * lerp(0.24, -0.08, flip)
+        let tip = CGPoint(x: centre.x - sin(tilt) * reach, y: centre.y + cos(tilt) * reach)
         if lick >= 0, flip > 0.2 {
             while smears.count <= lick { smears.append(nil) }
             if smears[lick] == nil { smears[lick] = Smear(points: [], born: time) }
@@ -594,6 +615,7 @@ final class SignalCatchGame {
 
         var face = context
         face.translateBy(x: centre.x, y: centre.y)
+        face.rotate(by: .radians(tilt))
         face.scaleBy(x: 1 + flip * 0.05, y: 1 + flip * 0.05)   // each lick pushes the face into the glass a little
         for side in [-1.0, 1.0] {
             // Starts and ends inside the head, so the ear grows out of it.
