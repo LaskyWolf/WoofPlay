@@ -537,11 +537,13 @@ struct HomeView: View {
                 if Connectivity.shared.isOffline {
                     OfflineDownloads()
                 } else {
-                    // The followed Twitch channels that are live, one after every five rows of YouTube's suggestions.
+                    let picks = QuickPicksSection.picks(from: model.items, pinned: QuickPins.shared.videos)
                     FeedContent(
-                        model: model, retry: { await reload() }, keeps: showsStreams ? Self.isLive : nil, loading: .home,
-                        hidesEmptyState: showsStreams && !twitchStreams.isEmpty,
-                        mixedIn: selectedChip == nil ? twitchStreams : []
+                        model: model, retry: { await reload() },
+                        keeps: feedFilter(hiding: Set(picks.map(\.video.videoId))),
+                        loading: .home,
+                        // A short Home can fit whole in Quick Picks, which isn't "Nothing Here".
+                        hidesEmptyState: showsStreams ? !twitchStreams.isEmpty : selectedChip == nil && !model.items.isEmpty
                     ) {
                         if showsStreams {
                             // ponytail: Twitch first, then YouTube's live videos; YouTube's viewer counts are text, so the two aren't sorted together.
@@ -552,6 +554,10 @@ struct HomeView: View {
                             }
                         } else {
                             JumpBackInCard(history: history)
+                            if selectedChip == nil {
+                                QuickPicksSection(picks: picks)
+                                LiveNowSection(streams: twitchLive.channels.map { ($0, false) } + twitchLive.suggested.map { ($0, true) })
+                            }
                         }
                     }
                 }
@@ -571,7 +577,7 @@ struct HomeView: View {
                 await model.load(.browse(YouTubeFeeds.home))
             }
             .task { if history.items.isEmpty { await history.load(.browse(YouTubeFeeds.history)) } }
-            // Here and not in Jump Back In: an empty card draws nothing, so its task never ran.
+            // Here and not in Live Now: an empty section draws nothing, so its task never runs.
             .task { await twitchLive.refresh() }
             // Back online: the page loaded while offline only holds errors.
             .onChange(of: Connectivity.shared.isOffline) { if !Connectivity.shared.isOffline { Task { await reload() } } }
@@ -602,6 +608,13 @@ struct HomeView: View {
     }
 
     private var showsStreams: Bool { selectedChip == Self.streamsChip }
+
+    /// Without a filter, Quick Picks' videos leave the rows below, so none shows twice.
+    private func feedFilter(hiding pickIds: Set<String>) -> ((FeedItem) -> Bool)? {
+        if showsStreams { return Self.isLive }
+        guard selectedChip == nil else { return nil }
+        return { !pickIds.contains($0.id) }
+    }
     private var twitchStreams: [TwitchChannel] { twitchLive.channels + twitchLive.suggested }
 
     private func tapChip(_ title: String) {
@@ -630,12 +643,10 @@ struct HomeView: View {
     }
 }
 
-/// A quick way back in: the latest unfinished video, and the followed Twitch channels that are live now.
-/// History keeps the full list.
+/// A quick way back in: the latest unfinished video. History keeps the full list.
 private struct JumpBackInCard: View {
     let history: FeedModel
     @Environment(Router.self) private var router
-    @ObservedObject private var live = TwitchLive.shared
     @EnvironmentObject private var settings: AppSettings
 
     private static let thumbWidth = Layout.videoMedium
@@ -647,49 +658,18 @@ private struct JumpBackInCard: View {
         Group {
             if history.items.isEmpty, history.isLoading {
                 loading
-            } else if main != nil || !streams.isEmpty {
-                card
+            } else if let main {
+                VStack(alignment: .leading, spacing: Layout.rowSpacing) {
+                    Text("Jump Back In").font(.title3.bold())
+                    resumeRow(main)
+                }
+                .padding(Layout.rowSpacing)
+                .homeCardBackground()
             }
         }
         .onChange(of: router.current?.videoId) { _, videoId in
             if videoId == nil { Task { await history.load(.browse(YouTubeFeeds.history)) } }
         }
-    }
-
-    /// Followed channels first, then suggested ones.
-    private var streams: [(channel: TwitchChannel, isSuggested: Bool)] {
-        live.channels.map { ($0, false) } + live.suggested.map { ($0, true) }
-    }
-
-    private var card: some View {
-        VStack(alignment: .leading, spacing: Layout.rowSpacing) {
-            Text("Jump Back In").font(.title3.bold())
-            if let main {
-                resumeRow(main)
-            }
-            if !streams.isEmpty {
-                if main != nil {
-                    Divider().padding(.horizontal, -Layout.rowSpacing)
-                }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: Layout.menuRowSpacing) {
-                        ForEach(streams, id: \.channel.id) { stream in
-                            Button { router.play(stream.channel.video) } label: { LiveFace(channel: stream.channel, isSuggested: stream.isSuggested) }
-                                .buttonStyle(ZoomPressStyle(scale: 0.96))
-                                .accessibilityLabel("Watch \(stream.channel.name) live, \(stream.channel.game)")
-                                .accessibilityHint(stream.isSuggested ? "Suggested, not followed" : "")
-                        }
-                    }
-                    // Room for the ring and the LIVE label, which sit outside each picture.
-                    .padding(.vertical, Layout.cardSpacing)
-                }
-                // Scrolls out to the card's edges, and starts in line with the title.
-                .contentMargins(.horizontal, Layout.rowSpacing, for: .scrollContent)
-                .padding(.horizontal, -Layout.rowSpacing)
-            }
-        }
-        .padding(Layout.rowSpacing)
-        .homeCardBackground()
     }
 
     private func resumeRow(_ main: (video: YouTubeVideo, extras: VideoExtras)) -> some View {
@@ -752,6 +732,34 @@ private struct JumpBackInCard: View {
         .homeCardBackground()
         .shimmerClock()
         .accessibilityHidden(true)
+    }
+}
+
+/// The followed Twitch channels that are live, then suggested ones, as faces in one sideways row.
+private struct LiveNowSection: View {
+    let streams: [(channel: TwitchChannel, isSuggested: Bool)]
+    @Environment(Router.self) private var router
+
+    var body: some View {
+        if !streams.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                SectionTitle(title: "Live Now")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: Layout.menuRowSpacing) {
+                        ForEach(streams, id: \.channel.id) { stream in
+                            Button { router.play(stream.channel.video) } label: { LiveFace(channel: stream.channel, isSuggested: stream.isSuggested) }
+                                .buttonStyle(ZoomPressStyle(scale: 0.96))
+                                .accessibilityLabel("Watch \(stream.channel.name) live, \(stream.channel.game)")
+                                .accessibilityHint(stream.isSuggested ? "Suggested, not followed" : "")
+                        }
+                    }
+                    // Room for the ring and the LIVE label, which sit outside each picture.
+                    .padding(.vertical, Layout.cardSpacing)
+                }
+                .contentMargins(.horizontal, Layout.screenPadding, for: .scrollContent)
+            }
+            .padding(.bottom, Layout.rowSpacing)
+        }
     }
 }
 

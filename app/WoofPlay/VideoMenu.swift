@@ -96,6 +96,12 @@ struct VideoMenuItems: View {
         }
 
         Section {
+            if !video.isShort {
+                let isPinned = QuickPins.shared.isPinned(video.videoId)
+                Button(isPinned ? "Unpin from Quick Picks" : "Pin to Quick Picks", systemImage: isPinned ? "pin.slash" : "pin") {
+                    withAnimation(.smooth) { QuickPins.shared.toggle(video) }
+                }
+            }
             Button("Save to Watch Later", systemImage: "clock") {
                 router.run {
                     try await PlaylistActions.add(video.videoId, to: YouTubeFeeds.watchLaterPlaylistId)

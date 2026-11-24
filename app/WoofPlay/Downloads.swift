@@ -299,33 +299,53 @@ final class DownloadStore: ObservableObject {
 
     /// Copies video or audio files picked from the phone into the downloads folder, so they play like saved videos.
     /// `moving` takes files the app already owns, such as finished torrents, without a copy.
-    func addFiles(_ urls: [URL], moving: Bool = false) {
-        for url in urls {
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let id = Self.localPrefix + UUID().uuidString
-            let file = url.pathExtension.isEmpty ? id : id + "." + url.pathExtension
-            do {
-                if moving {
-                    try FileManager.default.moveItem(at: url, to: Self.folder.appending(path: file))
-                } else {
-                    try FileManager.default.copyItem(at: url, to: Self.folder.appending(path: file))
+    /// Copies (or moves) files into Downloads off the main thread: a big video, or one iCloud still has
+    /// to download, takes a while, and on the main thread it froze the file picker until it was done.
+    func addFiles(_ urls: [URL], moving: Bool = false, then done: (() -> Void)? = nil) {
+        importing += urls.count
+        let folder = Self.folder
+        Task {
+            for url in urls {
+                let placed = await Task.detached { Self.place(url, in: folder, moving: moving) }.value
+                importing -= 1
+                switch placed {
+                case .success(let file):
+                    let title = url.deletingPathExtension().lastPathComponent
+                    items.insert(Item(video: YouTubeVideo(videoId: file.id, title: title), videoFile: file.name, audioFile: ""), at: 0)
+                    save()
+                case .failure(let error):
+                    FileLog.shared.append("downloads", "WARN", "add file failed: \(error.localizedDescription)")
                 }
-            } catch {
-                FileLog.shared.append("downloads", "WARN", "add file failed: \(error.localizedDescription)")
-                continue
             }
-            let title = url.deletingPathExtension().lastPathComponent
-            items.insert(Item(video: YouTubeVideo(videoId: id, title: title), videoFile: file, audioFile: ""), at: 0)
+            done?()
         }
-        save()
+    }
+
+    /// How many picked files are still being copied in.
+    @Published private(set) var importing = 0
+
+    nonisolated private static func place(_ url: URL, in folder: URL, moving: Bool) -> Result<(id: String, name: String), Error> {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let id = localPrefix + UUID().uuidString
+        let name = url.pathExtension.isEmpty ? id : id + "." + url.pathExtension
+        do {
+            if moving {
+                try FileManager.default.moveItem(at: url, to: folder.appending(path: name))
+            } else {
+                try FileManager.default.copyItem(at: url, to: folder.appending(path: name))
+            }
+            return .success((id, name))
+        } catch {
+            return .failure(error)
+        }
     }
 
     /// mpv plays Matroska and WebM too, which iOS doesn't count as movies.
     static let importTypes: [UTType] = [.audiovisualContent] + ["mkv", "webm"].compactMap { UTType(filenameExtension: $0) }
 
     /// Files added from the phone have no YouTube page behind them.
-    static let localPrefix = "local-"
+    nonisolated static let localPrefix = "local-"
 
     // MARK: The queue
 
@@ -900,7 +920,7 @@ struct DownloadsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if store.items.isEmpty, store.active.isEmpty, store.waiting.isEmpty, torrents.jobs.isEmpty {
+                if store.items.isEmpty, store.active.isEmpty, store.waiting.isEmpty, torrents.jobs.isEmpty, store.importing == 0 {
                     ContentUnavailableView {
                         Label("No Downloads Yet", systemImage: "arrow.down.to.line")
                     } description: {
@@ -912,6 +932,16 @@ struct DownloadsView: View {
                     .padding(.vertical, 48)
                 } else {
                     header
+                }
+                if store.importing > 0 {
+                    HStack(spacing: Layout.chipSpacing) {
+                        ProgressView()
+                        Text("Adding \(store.importing) \(store.importing == 1 ? "file" : "files")…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, Layout.screenPadding)
+                    .padding(.vertical, Layout.rowSpacing)
                 }
                 if !torrents.jobs.isEmpty {
                     SectionTitle(title: "Torrents", count: torrents.jobs.count)

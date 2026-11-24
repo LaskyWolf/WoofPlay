@@ -100,9 +100,13 @@ final class TorrentStore: ObservableObject {
             guard let status = statuses[job.id] else { continue }
             switch status.state {
             case "finished":
-                DownloadStore.shared.addFiles(status.files.map { URL(filePath: $0) }, moving: true)
+                // The folder goes once its files have moved out, which happens in the background.
+                let folder = Self.root.appending(path: job.folder)
+                DownloadStore.shared.addFiles(status.files.map { URL(filePath: $0) }, moving: true) {
+                    try? FileManager.default.removeItem(at: folder)
+                }
                 wp_remove(session, job.id, 0)
-                finish(job)
+                finish(job, removesFolder: false)
             case "noMedia":
                 wp_remove(session, job.id, 1)
                 finish(job)
@@ -114,8 +118,8 @@ final class TorrentStore: ObservableObject {
     }
 
     /// Forgets the job and deletes what's left of its folder.
-    private func finish(_ job: Job) {
-        try? FileManager.default.removeItem(at: Self.root.appending(path: job.folder))
+    private func finish(_ job: Job, removesFolder: Bool = true) {
+        if removesFolder { try? FileManager.default.removeItem(at: Self.root.appending(path: job.folder)) }
         jobs.removeAll { $0.id == job.id }
         statuses[job.id] = nil
         save()

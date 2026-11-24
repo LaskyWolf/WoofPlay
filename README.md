@@ -29,6 +29,7 @@
 ## Features
 
 - Explore and Following feeds that mix YouTube videos and live Twitch streams
+- Home starts with Quick Picks (pages of videos, with your pins first) and Live Now (followed Twitch channels on air)
 - mpv player with quality, speed, captions, chapters and a floating miniplayer
 - Live chat with Super Chats, Bits, subs and raids
 - Comments with replies, sorting, editing and reporting

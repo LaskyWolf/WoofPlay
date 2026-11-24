@@ -160,7 +160,8 @@ struct LibraryView: View {
             } label: {
                 ShortcutTile(
                     title: "Downloads",
-                    subtitle: downloads.items.isEmpty ? "Offline" : "\(downloads.items.count) \(downloads.items.count == 1 ? "video" : "videos")",
+                    subtitle: downloads.importing > 0 ? "Adding files…"
+                        : downloads.items.isEmpty ? "Offline" : "\(downloads.items.count) \(downloads.items.count == 1 ? "video" : "videos")",
                     icon: "arrow.down.circle.fill",
                     tint: .violet,
                     covers: covers(downloads.items.map(\.video))
