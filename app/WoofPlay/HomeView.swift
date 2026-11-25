@@ -598,6 +598,7 @@ struct HomeView: View {
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 0) { extras(thumbWidth: Layout.videoSmall) }
                             }
+                            .scrollIndicators(.hidden)
                             .frame(width: Self.sideColumnWidth)
                         }
                         feed(isCompact: true) {

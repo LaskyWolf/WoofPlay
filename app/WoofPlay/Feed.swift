@@ -209,7 +209,9 @@ final class Subscriptions {
 
 extension YouTubeVideo {
     static func cover(of videoId: String) -> String {
-        "https://i.ytimg.com/vi/\(videoId)/hqdefault.jpg"
+        // A file added from the phone has a frame of its own in Downloads.
+        if videoId.hasPrefix(DownloadStore.localPrefix) { return DownloadStore.coverFile(of: videoId).absoluteString }
+        return "https://i.ytimg.com/vi/\(videoId)/hqdefault.jpg"
     }
 
     var cover: String { thumbnailURL ?? Self.cover(of: videoId) }

@@ -74,6 +74,10 @@ final class Router {
     private(set) var playlistTitle: String?
     /// Confirms that a shared magnet link started downloading.
     var torrentNotice: String?
+    /// The pasted link while the torrent pop-up is open; nil when it's closed.
+    var torrentLink: String?
+    /// How long an alert takes to close before the next one can show.
+    static let alertCloseTime = Duration.milliseconds(400)
     var actionMessage: String? {
         didSet {
             if let actionMessage { FileLog.shared.append("action", "WARNING", actionMessage) }
@@ -439,15 +443,25 @@ final class Router {
     func receive(_ url: URL) {
         if url.scheme == "magnet" || (url.scheme == "woofplay" && url.host == "magnet") {
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery ?? ""
-            if let magnet = URL(string: "magnet:?" + query), let problem = TorrentStore.shared.add(magnet) {
-                actionMessage = problem
-            } else {
-                torrentNotice = "The download continues while WoofPlay is open. Follow it in Library › Downloads."
-            }
+            startTorrent("magnet:?" + query)
         } else if let link = YouTubeLink(url: url) {
             pendingLink = link
         } else if url.host?.isEmpty == false || !url.path.isEmpty {
             actionMessage = "WoofPlay can't open this link."
+        }
+    }
+
+    /// A magnet link shared from another app or pasted in the torrent pop-up.
+    func startTorrent(_ link: String) {
+        let link = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard link.lowercased().hasPrefix("magnet:"), let magnet = URL(string: link) else {
+            actionMessage = "Paste a magnet link: it starts with “magnet:?”."
+            return
+        }
+        if let problem = TorrentStore.shared.add(magnet) {
+            actionMessage = problem
+        } else {
+            torrentNotice = "The download continues while WoofPlay is open. Follow it in Library › Downloads."
         }
     }
 

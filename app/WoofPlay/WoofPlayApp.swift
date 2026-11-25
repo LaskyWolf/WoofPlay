@@ -131,6 +131,23 @@ extension View {
         } message: {
             Text(router.actionMessage ?? "")
         }
+        .alert("Download Torrent", isPresented: Binding(get: { isActive && router.torrentLink != nil }, set: { if !$0 { router.torrentLink = nil } })) {
+            TextField("magnet:?xt=…", text: Binding(get: { router.torrentLink ?? "" }, set: { router.torrentLink = $0 }))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            Button("Download") {
+                let link = router.torrentLink ?? ""
+                // The pop-up is still closing, and an alert shown before it's gone doesn't appear.
+                Task {
+                    try? await Task.sleep(for: Router.alertCloseTime)
+                    router.startTorrent(link)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Paste a magnet link. The download continues while WoofPlay is open.")
+        }
         .alert("Torrent Started", isPresented: Binding(get: { isActive && router.torrentNotice != nil }, set: { if !$0 { router.torrentNotice = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {

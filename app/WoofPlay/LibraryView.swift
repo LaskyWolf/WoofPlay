@@ -60,6 +60,7 @@ struct LibraryView: View {
                         ScrollView { sidebar }
                             // The tiles' coloured shadows reach past the column.
                             .scrollClipDisabled()
+                            .scrollIndicators(.hidden)
                             .frame(width: Self.sidebarWidth)
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 0) {
@@ -194,6 +195,7 @@ struct LibraryView: View {
                 }
                 .contextMenu {
                     Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
+                    Button("Download Torrent…", systemImage: "link.badge.plus") { router.torrentLink = "" }
                 }
             }
             .buttonStyle(ZoomPressStyle())
@@ -251,6 +253,7 @@ struct LibraryView: View {
             }
             .contextMenu {
                 Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
+                Button("Download Torrent…", systemImage: "link.badge.plus") { router.torrentLink = "" }
             }
         }
         .buttonStyle(ZoomPressStyle())
@@ -266,9 +269,12 @@ struct LibraryView: View {
     }
 
     /// Built from the video's id, because YouTube sends some list entries with an unusable picture.
-    /// Files added from the phone have no YouTube cover, so they're left out.
+    /// A file added from the phone counts once its picture has been made.
     private func covers(_ videos: [YouTubeVideo]) -> [String] {
-        videos.filter { !$0.videoId.hasPrefix(DownloadStore.localPrefix) }.prefix(2).map { YouTubeVideo.cover(of: $0.videoId) }
+        videos.lazy
+            .filter { !$0.videoId.hasPrefix(DownloadStore.localPrefix) || FileManager.default.fileExists(atPath: DownloadStore.coverFile(of: $0.videoId).path) }
+            .prefix(2)
+            .map { YouTubeVideo.cover(of: $0.videoId) }
     }
 
     /// The hidden Liked Videos playlist has a cover of its own, for when its videos don't load.

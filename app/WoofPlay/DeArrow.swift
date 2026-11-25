@@ -261,7 +261,7 @@ struct VideoCoverImage: View {
 
     /// Waits for DeArrow's answer, so YouTube's picture isn't downloaded just to be replaced.
     /// DeArrow only knows YouTube's videos.
-    private var usesDeArrow: Bool { isDeArrowOn && !Twitch.isTwitch(videoId) }
+    private var usesDeArrow: Bool { isDeArrowOn && !Twitch.isTwitch(videoId) && !videoId.hasPrefix(DownloadStore.localPrefix) }
 
     private var shownURL: String? {
         guard usesDeArrow, !OriginalCovers.shared.shows(videoId) else { return own }

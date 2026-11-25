@@ -403,7 +403,7 @@ enum ImageStore {
     static func load(_ url: String, maxPixels: Int? = nil) async throws -> UIImage {
         // Some of YouTube's image addresses leave out the "https:".
         guard let address = URL(string: url.hasPrefix("//") ? "https:" + url : url) else { throw URLError(.badURL) }
-        let (data, response) = try await session.data(from: address)
+        let (data, response) = try await fetch(address)
         // YouTube answers a missing picture with a 404 and a gray image.
         let status = (response as? HTTPURLResponse)?.statusCode
         if status == 204 || status == 404 { throw URLError(.fileDoesNotExist) }
@@ -411,6 +411,16 @@ enum ImageStore {
         let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
         cache.setObject(image, forKey: key(url, maxPixels), cost: cost)
         return image
+    }
+
+    /// Pictures made for files added from the phone are on disk.
+    private static func fetch(_ address: URL) async throws -> (Data, URLResponse?) {
+        guard address.isFileURL else {
+            let (data, response) = try await session.data(from: address)
+            return (data, response)
+        }
+        guard let data = await offMain({ try? Data(contentsOf: address) }) else { throw URLError(.fileDoesNotExist) }
+        return (data, nil)
     }
 
     /// Memory follows an image's pixels, not its file size, so small uses decode small.

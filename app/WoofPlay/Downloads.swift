@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import Network
 import SwiftUI
@@ -240,6 +241,7 @@ final class DownloadStore: ObservableObject {
         try? folder.setResourceValues(values)
         let data = try? Data(contentsOf: Self.index)
         items = data.flatMap { try? JSONDecoder().decode([Item].self, from: $0) } ?? []
+        makeMissingCovers()
         let pending = (try? Data(contentsOf: Self.pendingFile)).flatMap { try? JSONDecoder().decode(Pending.self, from: $0) }
         job = pending?.job
         waiting = pending?.waiting ?? []
@@ -293,6 +295,7 @@ final class DownloadStore: ObservableObject {
         try? FileManager.default.removeItem(at: Self.folder.appending(path: item.videoFile))
         if !item.audioFile.isEmpty { try? FileManager.default.removeItem(at: Self.folder.appending(path: item.audioFile)) }
         try? FileManager.default.removeItem(at: Self.detailsFile(of: item.id))
+        try? FileManager.default.removeItem(at: Self.coverFile(of: item.id))
         items.removeAll { $0.id == item.id }
         save()
     }
@@ -308,6 +311,7 @@ final class DownloadStore: ObservableObject {
                 importing -= 1
                 switch placed {
                 case .success(let file):
+                    await Self.makeCover(of: folder.appending(path: file.name), to: Self.coverFile(of: file.id, in: folder))
                     let title = url.deletingPathExtension().lastPathComponent
                     items.insert(Item(video: YouTubeVideo(videoId: file.id, title: title), videoFile: file.name, audioFile: ""), at: 0)
                     save()
@@ -316,6 +320,37 @@ final class DownloadStore: ObservableObject {
                 }
             }
             done?()
+        }
+    }
+
+    /// Where a file added from the phone keeps its picture.
+    nonisolated static func coverFile(of id: String, in folder: URL = ProfileStorage.downloadsFolder) -> URL {
+        folder.appending(path: id + "-cover.jpg")
+    }
+
+    /// A frame a tenth of the way in, since a video often opens on black.
+    // ponytail: AVFoundation reads MP4, MOV and M4V only; MKV and WebM stay without a picture. Grab the frame with mpv if they matter.
+    nonisolated private static func makeCover(of video: URL, to file: URL) async {
+        let asset = AVURLAsset(url: video)
+        guard let duration = try? await asset.load(.duration) else { return }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: ImageStore.feedPixels, height: ImageStore.feedPixels)
+        guard let frame = try? await generator.image(at: CMTimeMultiplyByFloat64(duration, multiplier: 0.1)),
+              let data = UIImage(cgImage: frame.image).jpegData(compressionQuality: 0.8) else { return }
+        try? data.write(to: file, options: .atomic)
+    }
+
+    /// Files added before pictures were made get theirs now.
+    private func makeMissingCovers() {
+        let folder = Self.folder
+        let local = items.filter { $0.id.hasPrefix(Self.localPrefix) }
+        Task {
+            for item in local {
+                let cover = Self.coverFile(of: item.id, in: folder)
+                guard !FileManager.default.fileExists(atPath: cover.path) else { continue }
+                await Self.makeCover(of: folder.appending(path: item.videoFile), to: cover)
+            }
         }
     }
 
@@ -808,49 +843,71 @@ struct DownloadedBadge: View {
 /// opened or closed, so the result isn't missed on another tab.
 struct LibraryDownloadCard: View {
     @ObservedObject private var store = DownloadStore.shared
+    @ObservedObject private var torrents = TorrentStore.shared
     private let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
 
     var body: some View {
-        if let batch = store.batch {
-            NavigationLink {
-                DownloadsView().onAppear { store.clearFinishedBatch() }
-            } label: {
-                content(batch)
-            }
-            .buttonStyle(ZoomPressStyle(scale: 0.98))
-            .accessibilityHint("Opens Downloads")
-            .overlay(alignment: .trailing) {
-                if batch.isDone {
-                    Button("Close", systemImage: "xmark") {
-                        withAnimation(.smooth(duration: 0.3)) { store.clearFinishedBatch() }
+        VStack(spacing: Layout.chipSpacing) {
+            if let batch = store.batch {
+                link {
+                    card(symbol: symbol(batch), isWarning: batch.failed > 0 && batch.isDone, title: title(batch), detail: detail(batch),
+                         fraction: batch.isDone ? nil : store.batchFraction,
+                         // Room for the close button once it's done.
+                         trailingRoom: batch.isDone ? 28 : 0)
+                }
+                .overlay(alignment: .trailing) {
+                    if batch.isDone {
+                        Button("Close", systemImage: "xmark") {
+                            withAnimation(.smooth(duration: 0.3)) { store.clearFinishedBatch() }
+                        }
+                        .labelStyle(.iconOnly)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(.rect)
+                        .buttonStyle(ZoomPressStyle())
                     }
-                    .labelStyle(.iconOnly)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(.rect)
-                    .buttonStyle(ZoomPressStyle())
                 }
             }
-            .padding(.horizontal, Layout.screenPadding)
-            .padding(.bottom, Layout.sectionGap)
-            .transition(.opacity)
+            // A torrent's card goes once its files have moved into Downloads.
+            ForEach(torrents.jobs) { job in
+                let status = torrents.statuses[job.id]
+                link {
+                    card(symbol: "arrow.down.to.line", isWarning: status?.error?.isEmpty == false,
+                         title: TorrentRow.title(status), detail: TorrentRow.detail(status, withPercent: false), fraction: status?.progress ?? 0)
+                }
+            }
         }
+        .padding(.horizontal, Layout.screenPadding)
+        .padding(.bottom, store.batch == nil && torrents.jobs.isEmpty ? 0 : Layout.sectionGap)
+        .animation(.smooth(duration: 0.3), value: torrents.jobs.map(\.id))
     }
 
-    private func content(_ batch: DownloadStore.Batch) -> some View {
+    private func link<Label: View>(@ViewBuilder _ label: () -> Label) -> some View {
+        NavigationLink {
+            DownloadsView().onAppear { store.clearFinishedBatch() }
+        } label: {
+            label()
+        }
+        .buttonStyle(ZoomPressStyle(scale: 0.98))
+        .accessibilityHint("Opens Downloads")
+        .transition(.opacity)
+    }
+
+    /// `fraction` is nil once the work is done, which hides the percentage and the fill.
+    private func card(symbol: String, isWarning: Bool, title: String, detail: String, fraction: Double?, trailingRoom: CGFloat = 0) -> some View {
         HStack(spacing: Layout.rowSpacing) {
-            Image(systemName: symbol(batch))
+            Image(systemName: symbol)
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(batch.failed > 0 && batch.isDone ? AnyShapeStyle(.orange) : AnyShapeStyle(.tint))
+                .foregroundStyle(isWarning ? AnyShapeStyle(.orange) : AnyShapeStyle(.tint))
                 .contentTransition(.symbolEffect(.replace))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title(batch))
+                Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(detail(batch))
+                Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -858,28 +915,27 @@ struct LibraryDownloadCard: View {
                     .multilineTextAlignment(.leading)
             }
             Spacer(minLength: Layout.chipSpacing)
-            if !batch.isDone {
-                Text("\(Int(store.batchFraction * 100))%")
+            if let fraction {
+                Text("\(Int(fraction * 100))%")
                     .font(.subheadline.weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(.tint)
             }
         }
         .padding(Layout.rowSpacing)
-        // Room for the close button once it's done.
-        .padding(.trailing, batch.isDone ? 28 : 0)
+        .padding(.trailing, trailingRoom)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background { progressFill(batch) }
+        .background { progressFill(fraction) }
         .background(Color(.secondarySystemBackground))
         .clipShape(shape)
         .contentShape(shape)
     }
 
     /// A tinted fill growing with a solid bar under it.
-    private func progressFill(_ batch: DownloadStore.Batch) -> some View {
+    private func progressFill(_ fraction: Double?) -> some View {
         GeometryReader { geometry in
-            if !batch.isDone {
-                let width = geometry.size.width * store.batchFraction
+            if let fraction {
+                let width = geometry.size.width * fraction
                 ZStack(alignment: .bottomLeading) {
                     Rectangle().fill(TintShapeStyle.tint.opacity(0.18)).frame(width: width)
                     Rectangle().fill(.tint).frame(width: width, height: 3)
@@ -887,7 +943,7 @@ struct LibraryDownloadCard: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
         }
-        .animation(.linear(duration: 0.2), value: store.batchFraction)
+        .animation(.linear(duration: 0.2), value: fraction)
     }
 
     private func symbol(_ batch: DownloadStore.Batch) -> String {
@@ -1007,6 +1063,7 @@ struct DownloadsView: View {
         .toolbar {
             Menu("More", systemImage: "ellipsis") {
                 Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
+                Button("Download Torrent…", systemImage: "link.badge.plus") { router.torrentLink = "" }
                 Button("Add to Queue", systemImage: "text.append") {
                     for video in videos { router.addToQueue(video) }
                 }
@@ -1086,17 +1143,23 @@ private struct TorrentRow: View {
     let status: TorrentStore.Status?
     let onCancel: () -> Void
 
-    private var title: String {
+    private var title: String { Self.title(status) }
+    private var detail: String { Self.detail(status) }
+
+    /// Also on Library's download card.
+    static func title(_ status: TorrentStore.Status?) -> String {
         guard let name = status?.name, !name.isEmpty else { return "Magnet Link" }
         return name
     }
 
-    private var detail: String {
+    /// The card shows the percentage on its own, so it leaves it out here.
+    static func detail(_ status: TorrentStore.Status?, withPercent: Bool = true) -> String {
         guard let status else { return "Starting" }
         if let error = status.error, !error.isEmpty { return error }
         if status.state == "metadata" { return "Finding the file list · \(status.peers) peers" }
         let rate = ByteCountFormatter.string(fromByteCount: Int64(status.rate), countStyle: .file)
-        return "\(Int(status.progress * 100))% · \(rate)/s · \(status.peers) peers"
+        let speed = "\(rate)/s · \(status.peers) peers"
+        return withPercent ? "\(Int(status.progress * 100))% · \(speed)" : speed
     }
 
     var body: some View {
