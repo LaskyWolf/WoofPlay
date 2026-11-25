@@ -201,7 +201,7 @@ struct OfflinePage: View {
                 .buttonStyle(ZoomPressStyle())
                 // As on Library's Downloads tile: files from the phone play offline too.
                 .contextMenu {
-                    Button("Add Files…", systemImage: "folder.badge.plus") { store.picksFiles = true }
+                    Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
                 }
             }
             .padding(.horizontal, Layout.screenPadding)

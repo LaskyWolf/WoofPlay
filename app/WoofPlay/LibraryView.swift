@@ -167,7 +167,7 @@ struct LibraryView: View {
                 )
             }
             .contextMenu {
-                Button("Add Files…", systemImage: "folder.badge.plus") { downloads.picksFiles = true }
+                Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
             }
         }
         .buttonStyle(ZoomPressStyle())

@@ -323,8 +323,6 @@ final class DownloadStore: ObservableObject {
 
     /// How many picked files are still being copied in.
     @Published private(set) var importing = 0
-    /// Shows the file picker, which lives once on the app's root; every Add Files… button sets this.
-    @Published var picksFiles = false
 
     nonisolated private static func place(_ url: URL, in folder: URL, moving: Bool) -> Result<(id: String, name: String), Error> {
         let scoped = url.startAccessingSecurityScopedResource()
@@ -344,7 +342,7 @@ final class DownloadStore: ObservableObject {
     }
 
     /// mpv plays Matroska and WebM too, which iOS doesn't count as movies.
-    static let importTypes: [UTType] = [.audiovisualContent] + ["mkv", "webm"].compactMap { UTType(filenameExtension: $0) }
+    static let importTypes: [UTType] = [.audiovisualContent] + ["mkv", "webm"].compactMap { UTType(filenameExtension: $0, conformingTo: .audiovisualContent) }
 
     /// Files added from the phone have no YouTube page behind them.
     nonisolated static let localPrefix = "local-"
@@ -995,7 +993,7 @@ struct DownloadsView: View {
         .toolbar(.visible, for: .navigationBar)
         .toolbar {
             Menu("More", systemImage: "ellipsis") {
-                Button("Add Files…", systemImage: "folder.badge.plus") { store.picksFiles = true }
+                Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
                 Button("Add to Queue", systemImage: "text.append") {
                     for video in videos { router.addToQueue(video) }
                 }
@@ -1023,18 +1021,49 @@ struct DownloadsView: View {
     }
 }
 
-extension View {
-    /// The phone's file picker for video and audio files, copied into Downloads.
-    func addFilesImporter(isPresented: Binding<Bool>) -> some View {
-        fileImporter(isPresented: isPresented, allowedContentTypes: DownloadStore.importTypes, allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls):
-                FileLog.shared.append("downloads", "INFO", "picked \(urls.count) files")
-                DownloadStore.shared.addFiles(urls)
-            case .failure(let error):
-                FileLog.shared.append("downloads", "WARN", "file picker failed: \(error.localizedDescription)")
-            }
+/// The phone's file picker for video and audio files, which go into Downloads.
+/// iOS's own picker, not SwiftUI's fileImporter, whose Open button did nothing here. As a copy,
+/// iOS fetches the files (iCloud ones too) and hands over finished copies, which are moved in.
+@MainActor
+final class FilePicker: NSObject, UIDocumentPickerDelegate {
+    static let shared = FilePicker()
+
+    /// A long press menu is still closing when its button runs; the picker waits for it.
+    private static let retryDelay = 0.1
+    private static let maxRetries = 10
+
+    func present(attempt: Int = 0) {
+        guard let top = Self.topController() else {
+            FileLog.shared.append("downloads", "WARN", "file picker: no screen to show it on")
+            return
         }
+        if top.isBeingDismissed, attempt < Self.maxRetries {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryDelay) { self.present(attempt: attempt + 1) }
+            return
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: DownloadStore.importTypes, asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.delegate = self
+        top.present(picker, animated: true)
+        FileLog.shared.append("downloads", "INFO", "file picker shown")
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        FileLog.shared.append("downloads", "INFO", "picked \(urls.count) files")
+        DownloadStore.shared.addFiles(urls, moving: true)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        FileLog.shared.append("downloads", "INFO", "file picker cancelled")
+    }
+
+    private static func topController() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        var top = scene?.keyWindow?.rootViewController
+        while let next = top?.presentedViewController { top = next }
+        return top
     }
 }
 
