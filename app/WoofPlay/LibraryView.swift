@@ -45,38 +45,68 @@ struct LibraryView: View {
         selectedFilter == nil || selectedFilter == filter
     }
 
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    /// Landscape's sidebar picks one section to show beside it.
+    @State private var sidebarPick = Filter.playlists
+    private static let sidebarWidth: CGFloat = 230
+    private var isLandscape: Bool { verticalSizeClass == .compact }
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    shortcuts
-                    LibraryDownloadCard()
-                    if shows(.playlists) {
-                        playlistsSection
+            Group {
+                if isLandscape {
+                    // Like Music on iPad: the sections in a list, the picked one beside it.
+                    HStack(alignment: .top, spacing: Layout.screenPadding) {
+                        ScrollView { sidebar }
+                            .frame(width: Self.sidebarWidth)
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                LibraryDownloadCard()
+                                switch sidebarPick {
+                                case .playlists: playlistsSection
+                                case .channels: channelsSection
+                                case .downloaded, .inProgress: inProgressSection
+                                }
+                            }
+                        }
                     }
-                    if shows(.channels) {
-                        channelsSection
-                    }
-                    if selectedFilter == .downloaded {
-                        videoSection(
-                            title: "Downloaded",
-                            videos: downloads.items.map { ($0.video, VideoExtras()) },
-                            emptyText: "Long press a video and choose Download."
-                        )
-                    }
-                    if selectedFilter == .inProgress {
-                        videoSection(title: "In Progress", videos: history.unfinished, emptyText: "Videos you stop partway through show up here.")
+                    .padding(.leading, Layout.screenPadding)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            shortcuts
+                            LibraryDownloadCard()
+                            if shows(.playlists) {
+                                playlistsSection
+                            }
+                            if shows(.channels) {
+                                channelsSection
+                            }
+                            if selectedFilter == .downloaded {
+                                videoSection(
+                                    title: "Downloaded",
+                                    videos: downloads.items.map { ($0.video, VideoExtras()) },
+                                    emptyText: "Long press a video and choose Download."
+                                )
+                            }
+                            if selectedFilter == .inProgress {
+                                inProgressSection
+                            }
+                        }
+                        .animation(.smooth(duration: 0.4), value: selectedFilter)
                     }
                 }
-                .animation(.smooth(duration: 0.4), value: selectedFilter)
             }
             .tabRoot(title: "Library", tab: .library, onAdd: {
                 newTitle = ""
                 isCreating = true
             }, filters: {
-                FilterChips(titles: Filter.allCases.map(\.rawValue), selected: selectedFilter?.rawValue) { title in
-                    let filter = Filter(rawValue: title)
-                    selectedFilter = selectedFilter == filter ? nil : filter
+                // The sidebar does the chips' job in landscape.
+                if !isLandscape {
+                    FilterChips(titles: Filter.allCases.map(\.rawValue), selected: selectedFilter?.rawValue) { title in
+                        let filter = Filter(rawValue: title)
+                        selectedFilter = selectedFilter == filter ? nil : filter
+                    }
                 }
             })
             .tappingRefresh { await load() }
@@ -138,6 +168,63 @@ struct LibraryView: View {
                 musicPlaylistIds.insert(playlist.playlistId)
             }
         }
+    }
+
+    // MARK: Sidebar
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ZoomLink(wholeLabel: true) {
+                PlaylistPage(title: "Liked Videos", playlistId: YouTubeFeeds.likedVideosPlaylistId)
+            } label: {
+                sidebarRow("Liked Videos", icon: "hand.thumbsup.fill", tint: .lime)
+            }
+            ZoomLink(wholeLabel: true) {
+                PlaylistPage(title: "Watch Later", playlistId: YouTubeFeeds.watchLaterPlaylistId)
+            } label: {
+                sidebarRow("Watch Later", icon: "clock.fill", tint: .yellow, count: watchLater.videos.isEmpty ? nil : watchLater.videos.count)
+            }
+            ZoomLink(wholeLabel: true) {
+                DownloadsView()
+            } label: {
+                sidebarRow("Downloads", icon: "arrow.down.circle.fill", tint: .violet, count: downloads.items.isEmpty ? nil : downloads.items.count)
+            }
+            .contextMenu {
+                Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
+            }
+            Spacer().frame(height: Layout.rowSpacing)
+            pickRow(.playlists, title: "Playlists", icon: "list.bullet.rectangle.fill", count: shownPlaylists.count)
+            pickRow(.channels, title: "Channels", icon: "person.2.fill", count: channelEntries.count)
+            pickRow(.inProgress, title: "In Progress", icon: "play.circle.fill", count: history.unfinished.count)
+        }
+        .buttonStyle(ZoomPressStyle(scale: 0.98))
+        .padding(.top, Layout.contentTopGap)
+    }
+
+    private func pickRow(_ filter: Filter, title: String, icon: String, count: Int) -> some View {
+        Button { sidebarPick = filter } label: {
+            sidebarRow(title, icon: icon, tint: Color(.systemGray), count: count, isPicked: sidebarPick == filter)
+        }
+        .accessibilityAddTraits(sidebarPick == filter ? .isSelected : [])
+    }
+
+    private func sidebarRow(_ title: String, icon: String, tint: Color, count: Int? = nil, isPicked: Bool = false) -> some View {
+        HStack(spacing: Layout.rowSpacing - 2) {
+            Image(systemName: icon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(tint, in: .rect(cornerRadius: Layout.cardRadius - 1, style: .continuous))
+            Text(title).foregroundStyle(Color.primary).lineLimit(1)
+            Spacer(minLength: 0)
+            if let count {
+                Text("\(count)").font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, Layout.rowSpacing - 2)
+        .frame(minHeight: 44)
+        .background(isPicked ? Color(.systemGray5) : .clear, in: .rect(cornerRadius: Layout.cardRadius + 2, style: .continuous))
+        .contentShape(.rect)
     }
 
     // MARK: Shortcuts
@@ -222,6 +309,11 @@ struct LibraryView: View {
     }
 
     private static let gridColumns = Array(repeating: GridItem(.flexible(), spacing: Layout.sectionGap, alignment: .top), count: 2)
+    private static let wideGridColumns = Array(repeating: GridItem(.flexible(), spacing: Layout.sectionGap, alignment: .top), count: 4)
+
+    private var inProgressSection: some View {
+        videoSection(title: "In Progress", videos: history.unfinished, emptyText: "Videos you stop partway through show up here.")
+    }
 
     private var playlistsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -230,7 +322,7 @@ struct LibraryView: View {
                 LoadingMediaRows(isCircular: false)
             }
             if settings.libraryLayout == .grid {
-                LazyVGrid(columns: Self.gridColumns, spacing: Layout.sectionGap) {
+                LazyVGrid(columns: isLandscape ? Self.wideGridColumns : Self.gridColumns, spacing: Layout.sectionGap) {
                     playlistItems
                 }
                 .padding(.horizontal, Layout.screenPadding)

@@ -341,6 +341,9 @@ struct TabHeader: View {
     var onAdd: (() -> Void)?
     /// Shows the Incognito button when set, for Search.
     var incognito: Binding<Bool>?
+    /// Landscape: a smaller title, with the tab's filters beside it on the same row.
+    var isCompact = false
+    var inline: AnyView?
     @EnvironmentObject private var session: Session
 
     var body: some View {
@@ -354,13 +357,17 @@ struct TabHeader: View {
                         ))
                 } else {
                     Text(title)
-                        .font(.largeTitle)
+                        .font(isCompact ? .title2 : .largeTitle)
                         .fontWeight(.bold)
                         .transition(.blurReplace)
                 }
             }
             .animation(UIAccessibility.isReduceMotionEnabled ? .easeOut(duration: 0.2) : .smooth(duration: 0.5), value: Connectivity.shared.isOffline)
-            Spacer()
+            if let inline {
+                inline.frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Spacer()
+            }
             // The targets are 44 pt, so a small gap keeps the icons as far apart as they look.
             HStack(spacing: Layout.cardSpacing) {
                 if let onAdd {
@@ -431,7 +438,7 @@ struct TabHeader: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, Layout.screenPadding)
-        .padding(.vertical, Layout.chipSpacing)
+        .padding(.vertical, isCompact ? 0 : Layout.chipSpacing)
     }
 
     @ViewBuilder
@@ -457,11 +464,7 @@ extension View {
     /// The header and the tab's filters stay on top while the page scrolls under Woof Music's fade.
     func tabRoot<Filters: View>(title: String, tab: AppTab, onAdd: (() -> Void)? = nil, incognito: Binding<Bool>? = nil, @ViewBuilder filters: () -> Filters) -> some View {
         safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                TabHeader(title: title, onAdd: onAdd, incognito: incognito)
-                // Filters ask YouTube for a new page, which can't happen offline.
-                if !Connectivity.shared.isOffline { filters() }
-            }
+            TabRootBar(title: title, onAdd: onAdd, incognito: incognito, filters: filters())
             .background {
                 LinearGradient(
                     stops: [
@@ -479,6 +482,29 @@ extension View {
         }
             .toolbar(.hidden, for: .navigationBar)
             .modifier(TabDestinations(tab: tab))
+    }
+}
+
+/// The header and filters of a tab: stacked upright, one row in landscape so the page keeps its height.
+private struct TabRootBar<Filters: View>: View {
+    let title: String
+    let onAdd: (() -> Void)?
+    let incognito: Binding<Bool>?
+    let filters: Filters
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    // Filters ask YouTube for a new page, which can't happen offline.
+    private var showsFilters: Bool { !Connectivity.shared.isOffline }
+
+    var body: some View {
+        if verticalSizeClass == .compact {
+            TabHeader(title: title, onAdd: onAdd, incognito: incognito, isCompact: true, inline: showsFilters ? AnyView(filters) : nil)
+        } else {
+            VStack(spacing: 0) {
+                TabHeader(title: title, onAdd: onAdd, incognito: incognito)
+                if showsFilters { filters }
+            }
+        }
     }
 }
 
@@ -530,34 +556,32 @@ struct HomeView: View {
     @State private var selectedChip: String?
     @ObservedObject private var twitchLive = TwitchLive.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    /// Landscape's left column, for Jump Back In, Quick Picks and Live Now.
+    private static let sideColumnWidth: CGFloat = 300
 
     var body: some View {
         NavigationStack {
             Group {
                 if Connectivity.shared.isOffline {
                     OfflinePage()
-                } else {
-                    FeedContent(
-                        model: model, retry: { await reload() },
-                        keeps: feedFilter(hiding: Set(quickPicks.map(\.video.videoId))),
-                        loading: .home,
-                        // A short Home can fit whole in Quick Picks, which isn't "Nothing Here".
-                        hidesEmptyState: showsStreams ? !twitchStreams.isEmpty : selectedChip == nil && !model.items.isEmpty
-                    ) {
-                        if showsStreams {
-                            // ponytail: Twitch first, then YouTube's live videos; YouTube's viewer counts are text, so the two aren't sorted together.
-                            ForEach(twitchStreams) { channel in
-                                TwitchStreamRow(channel: channel)
-                                    .padding(.horizontal, Layout.screenPadding)
-                                    .padding(.vertical, Layout.rowSpacing)
+                } else if verticalSizeClass == .compact {
+                    // Landscape: the extras keep a column of their own and the feed scrolls beside it as rows.
+                    HStack(alignment: .top, spacing: 0) {
+                        if !showsStreams {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 0) { extras(thumbWidth: Layout.videoSmall) }
                             }
-                        } else {
-                            JumpBackInCard(history: history)
-                            if selectedChip == nil {
-                                QuickPicksSection(picks: quickPicks)
-                                LiveNowSection(streams: twitchLive.channels.map { ($0, false) } + twitchLive.suggested.map { ($0, true) })
-                            }
+                            .frame(width: Self.sideColumnWidth)
                         }
+                        feed(isCompact: true) {
+                            if showsStreams { streams }
+                        }
+                    }
+                } else {
+                    feed(isCompact: false) {
+                        if showsStreams { streams } else { extras(thumbWidth: Layout.videoMedium) }
                     }
                 }
             }
@@ -588,6 +612,36 @@ struct HomeView: View {
                     Task { await history.load(.browse(YouTubeFeeds.history)) }
                 }
             }
+        }
+    }
+
+    private func feed<Header: View>(isCompact: Bool, @ViewBuilder header: @escaping () -> Header) -> some View {
+        FeedContent(
+            model: model, retry: { await reload() },
+            isCompact: isCompact,
+            keeps: feedFilter(hiding: Set(quickPicks.map(\.video.videoId))),
+            loading: isCompact ? .compact : .home,
+            // A short Home can fit whole in Quick Picks, which isn't "Nothing Here".
+            hidesEmptyState: showsStreams ? !twitchStreams.isEmpty : selectedChip == nil && !model.items.isEmpty,
+            header: header
+        )
+    }
+
+    // ponytail: Twitch first, then YouTube's live videos; YouTube's viewer counts are text, so the two aren't sorted together.
+    private var streams: some View {
+        ForEach(twitchStreams) { channel in
+            TwitchStreamRow(channel: channel)
+                .padding(.horizontal, Layout.screenPadding)
+                .padding(.vertical, Layout.rowSpacing)
+        }
+    }
+
+    @ViewBuilder
+    private func extras(thumbWidth: CGFloat) -> some View {
+        JumpBackInCard(history: history, thumbWidth: thumbWidth)
+        if selectedChip == nil {
+            QuickPicksSection(picks: quickPicks)
+            LiveNowSection(streams: twitchLive.channels.map { ($0, false) } + twitchLive.suggested.map { ($0, true) })
         }
     }
 
@@ -648,10 +702,9 @@ struct HomeView: View {
 /// A quick way back in: the latest unfinished video. History keeps the full list.
 private struct JumpBackInCard: View {
     let history: FeedModel
+    var thumbWidth = Layout.videoMedium
     @Environment(Router.self) private var router
     @EnvironmentObject private var settings: AppSettings
-
-    private static let thumbWidth = Layout.videoMedium
     private static let playSize = HeaderRoundIcon.primarySize
 
     private var main: (video: YouTubeVideo, extras: VideoExtras)? { history.unfinished.first }
@@ -682,7 +735,7 @@ private struct JumpBackInCard: View {
                     .deArrowMark(main.video.videoId, size: 26)
                     .clipShape(.rect(cornerRadius: Layout.tileRadius))
                     .videoZoomSource(main.video.videoId)
-                    .frame(width: Self.thumbWidth)
+                    .frame(width: thumbWidth)
                 VStack(alignment: .leading, spacing: Layout.cardSpacing) {
                     VideoTitle(video: main.video)
                         .font(.subheadline.weight(.semibold))
@@ -721,7 +774,7 @@ private struct JumpBackInCard: View {
             HStack(spacing: Layout.rowSpacing) {
                 ShimmerFill(radius: Layout.tileRadius)
                     .aspectRatio(Layout.videoAspect, contentMode: .fit)
-                    .frame(width: Self.thumbWidth)
+                    .frame(width: thumbWidth)
                 VStack(alignment: .leading, spacing: Layout.cardSpacing) {
                     LoadingLine(height: 14)
                     LoadingLine(height: 14, shortBy: 20)
@@ -883,25 +936,33 @@ struct SubsView: View {
         }
     }
 
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    private static let newColumnWidth: CGFloat = 270
+
+    private var showsNewVideos: Bool { filter == nil || filter == .videos }
+
     var body: some View {
         NavigationStack {
-            FeedContent(
-                model: filter == .posts ? posts : model, retry: reload, keeps: keeps, loading: loadingKind, shortsGrid: filter == .shorts,
-                hidesEmptyState: filter == .live && !twitchLive.channels.isEmpty
-            ) {
-                // ponytail: Twitch first, then YouTube; YouTube's viewer counts are text, so the two aren't sorted together.
-                if filter == .live {
-                    ForEach(twitchLive.channels) { channel in
-                        TwitchStreamRow(channel: channel)
-                            .padding(.horizontal, Layout.screenPadding)
-                            .padding(.vertical, Layout.rowSpacing)
+            Group {
+                if verticalSizeClass == .compact {
+                    // Landscape: New Videos stands on end at the left, everything else is a list of rows beside it.
+                    HStack(alignment: .top, spacing: 0) {
+                        if showsNewVideos, !newVideos.isEmpty {
+                            NewVideosColumn(videos: newVideos)
+                                .frame(width: Self.newColumnWidth)
+                        }
+                        feed(isCompact: true) { liveStreams }
                     }
-                }
-                if filter == nil || filter == .videos {
-                    if !newVideos.isEmpty {
-                        NewVideosCard(videos: newVideos)
-                    } else if model.items.isEmpty, model.isLoading {
-                        LoadingNewVideos()
+                } else {
+                    feed(isCompact: false) {
+                        liveStreams
+                        if showsNewVideos {
+                            if !newVideos.isEmpty {
+                                NewVideosCard(videos: newVideos)
+                            } else if model.items.isEmpty, model.isLoading {
+                                LoadingNewVideos()
+                            }
+                        }
                     }
                 }
             }
@@ -929,6 +990,27 @@ struct SubsView: View {
                 } else if let keeps {
                     await model.loadUntilMatch(keeps)
                 }
+            }
+        }
+    }
+
+    private func feed<Header: View>(isCompact: Bool, @ViewBuilder header: @escaping () -> Header) -> some View {
+        FeedContent(
+            model: filter == .posts ? posts : model, retry: reload, isCompact: isCompact, keeps: keeps,
+            loading: isCompact && loadingKind == .videos ? .compact : loadingKind, shortsGrid: filter == .shorts,
+            hidesEmptyState: filter == .live && !twitchLive.channels.isEmpty,
+            header: header
+        )
+    }
+
+    // ponytail: Twitch first, then YouTube; YouTube's viewer counts are text, so the two aren't sorted together.
+    @ViewBuilder
+    private var liveStreams: some View {
+        if filter == .live {
+            ForEach(twitchLive.channels) { channel in
+                TwitchStreamRow(channel: channel)
+                    .padding(.horizontal, Layout.screenPadding)
+                    .padding(.vertical, Layout.rowSpacing)
             }
         }
     }
@@ -2085,6 +2167,91 @@ private struct NewVideosCard: View {
         NewVideosFrame {
             ForEach(videos, id: \.videoId) { NewVideoRibbon(video: $0) }
         }
+    }
+}
+
+/// Landscape's New Videos: the same card stood on end, each video a coloured row that scrolls down.
+private struct NewVideosColumn: View {
+    let videos: [YouTubeVideo]
+
+    private static let radius: CGFloat = 22
+    private static let cardGap: CGFloat = 10
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Layout.rowSpacing) {
+            Text("New Videos")
+                .font(.title3.bold())
+                .padding(.horizontal, Layout.rowSpacing + 2)
+            ScrollView {
+                LazyVStack(spacing: Self.cardGap) {
+                    ForEach(videos, id: \.videoId) { NewVideoTile(video: $0) }
+                }
+                .padding(.horizontal, Layout.rowSpacing)
+                .padding(.bottom, Layout.rowSpacing)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(.top, Layout.rowSpacing + 2)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: Self.radius, style: .continuous))
+        .clipShape(.rect(cornerRadius: Self.radius, style: .continuous))
+        .padding(.leading, Layout.screenPadding)
+        .padding(.top, Layout.contentTopGap)
+    }
+}
+
+/// A new video in the colour of its own cover, in one row: the cover, then when, title and channel.
+private struct NewVideoTile: View {
+    let video: YouTubeVideo
+    @Environment(Router.self) private var router
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var tint: Color?
+
+    private static let coverWidth: CGFloat = 104
+    private static let radius: CGFloat = 16
+    private static let fallback = Color(white: 0.22)
+
+    var body: some View {
+        let base = tint ?? Self.fallback
+        Button {
+            SeenVideos.mark(video.videoId)
+            router.openVideo(video)
+        } label: {
+            HStack(spacing: Layout.rowSpacing) {
+                VideoCover(video: video, maxPixels: 336)
+                    .frame(width: Self.coverWidth, height: Self.coverWidth / Layout.videoAspect)
+                    .overlay(alignment: .bottomTrailing) { VideoBadge(video: video, extras: VideoExtras(), isCompact: true) }
+                    .clipShape(.rect(cornerRadius: Layout.cardRadius, style: .continuous))
+                    .videoZoomSource(video.videoId)
+                VStack(alignment: .leading, spacing: 2) {
+                    if let when = video.publishedTimeText {
+                        Text(when).font(.caption).opacity(0.8).lineLimit(1)
+                    }
+                    VideoTitle(video: video)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    if let channel = video.channelTitle {
+                        Text(channel).font(.caption).opacity(0.8).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(Layout.chipSpacing)
+            .foregroundStyle(.white)
+            .background(
+                LinearGradient(colors: [base.mix(with: .black, by: 0.1), base.mix(with: .black, by: 0.45)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: .rect(cornerRadius: Self.radius, style: .continuous)
+            )
+            .contentShape(.rect(cornerRadius: Self.radius))
+        }
+        .buttonStyle(ZoomPressStyle(scale: 0.97))
+        // The card is always dark, like the upright New Videos cards.
+        .environment(\.colorScheme, .dark)
+        .dynamicTypeSize(...DynamicTypeSize.xLarge)
+        .videoMenu(video, background: nil)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: tint)
+        .task { tint = await CoverTint.color(of: video.cover) }
     }
 }
 
