@@ -79,7 +79,7 @@ extension LiveChatModel {
 
     /// Returns true when Twitch asks for a new connection.
     private func handle(_ line: String) async throws -> Bool {
-        guard let message = IRCLine(line) else { return }
+        guard let message = IRCLine(line) else { return false }
         switch message.command {
         case "PING":
             try await send("PONG :\(message.trailing ?? "tmi.twitch.tv")")
