@@ -169,6 +169,9 @@ final class TwitchStream: ObservableObject {
                 case .failed(let error):
                     listener?.stateUpdateHandler = nil
                     continuation.resume(throwing: error)
+                case .cancelled:
+                    listener?.stateUpdateHandler = nil
+                    continuation.resume(throwing: CancellationError())
                 default:
                     break
                 }
@@ -176,7 +179,10 @@ final class TwitchStream: ObservableObject {
             listener.start(queue: .main)
         }
         // mpv gives up on a playlist with nothing in it, so a pre-roll is waited out here.
-        while try await fetch().segments == 0 {
+        while true {
+            let playlist = try await fetch()
+            guard playlist.status == 200 else { throw TwitchError("Twitch didn't send the stream (error \(playlist.status)).") }
+            if playlist.segments > 0 { break }
             try await Task.sleep(for: Self.waitForLive)
         }
         return "http://127.0.0.1:\(port)/live.m3u8"

@@ -297,16 +297,14 @@ final class DownloadStore: ObservableObject {
         save()
     }
 
-    /// Copies video or audio files picked from the phone into the downloads folder, so they play like saved videos.
-    /// `moving` takes files the app already owns, such as finished torrents, without a copy.
-    /// Copies (or moves) files into Downloads off the main thread: a big video, or one iCloud still has
-    /// to download, takes a while, and on the main thread it froze the file picker until it was done.
-    func addFiles(_ urls: [URL], moving: Bool = false, then done: (() -> Void)? = nil) {
+    /// Moves files the app already owns into Downloads, so they play like saved videos: picked files (copied in by
+    /// the file picker) and finished torrents. Off the main thread, because a big file takes a while.
+    func addFiles(_ urls: [URL], then done: (() -> Void)? = nil) {
         importing += urls.count
         let folder = Self.folder
         Task {
             for url in urls {
-                let placed = await Task.detached { Self.place(url, in: folder, moving: moving) }.value
+                let placed = await Task.detached { Self.place(url, in: folder) }.value
                 importing -= 1
                 switch placed {
                 case .success(let file):
@@ -314,27 +312,21 @@ final class DownloadStore: ObservableObject {
                     items.insert(Item(video: YouTubeVideo(videoId: file.id, title: title), videoFile: file.name, audioFile: ""), at: 0)
                     save()
                 case .failure(let error):
-                    FileLog.shared.append("downloads", "WARN", "add file failed: \(error.localizedDescription)")
+                    FileLog.shared.append("downloads", "WARNING", "add file failed: \(error.localizedDescription)")
                 }
             }
             done?()
         }
     }
 
-    /// How many picked files are still being copied in.
+    /// How many added files are still being moved in.
     @Published private(set) var importing = 0
 
-    nonisolated private static func place(_ url: URL, in folder: URL, moving: Bool) -> Result<(id: String, name: String), Error> {
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+    nonisolated private static func place(_ url: URL, in folder: URL) -> Result<(id: String, name: String), Error> {
         let id = localPrefix + UUID().uuidString
         let name = url.pathExtension.isEmpty ? id : id + "." + url.pathExtension
         do {
-            if moving {
-                try FileManager.default.moveItem(at: url, to: folder.appending(path: name))
-            } else {
-                try FileManager.default.copyItem(at: url, to: folder.appending(path: name))
-            }
+            try FileManager.default.moveItem(at: url, to: folder.appending(path: name))
             return .success((id, name))
         } catch {
             return .failure(error)
@@ -349,6 +341,15 @@ final class DownloadStore: ObservableObject {
 
     // MARK: The queue
 
+    /// Time to finish with the phone locked. iOS closes an app whose task outlives that time, so the task ends itself first.
+    private static func beginBackgroundTime() -> UIBackgroundTaskIdentifier {
+        var task = UIBackgroundTaskIdentifier.invalid
+        task = UIApplication.shared.beginBackgroundTask {
+            UIApplication.shared.endBackgroundTask(task)
+        }
+        return task
+    }
+
     private func advance() {
         guard isSessionReady, job == nil, starting == nil, let video = waiting.first else {
             settleBackground()
@@ -359,7 +360,7 @@ final class DownloadStore: ObservableObject {
         active = [Active(video: video)]
         let startedIn = generation
         // Long enough to get the next video going when this runs with the phone locked.
-        let backgroundTask = UIApplication.shared.beginBackgroundTask(expirationHandler: nil)
+        let backgroundTask = Self.beginBackgroundTime()
         Task {
             defer { UIApplication.shared.endBackgroundTask(backgroundTask) }
             do {
@@ -419,10 +420,13 @@ final class DownloadStore: ObservableObject {
         let started = Date()
         var done = 0.0
         var bytes: Int64 = 0
+        // Its own name, so a download that was dropped and is still finishing can't write into a new one's file.
+        let partialSuffix = Self.joiningSuffix + "-" + UUID().uuidString
+        var saved: [URL] = []
         do {
             for (track, file) in files {
                 let destination = folder.appending(path: file)
-                let partial = folder.appending(path: file + Self.joiningSuffix)
+                let partial = folder.appending(path: file + partialSuffix)
                 FileManager.default.createFile(atPath: partial.path, contents: nil)
                 let handle = try FileHandle(forWritingTo: partial)
                 defer { try? handle.close() }
@@ -442,15 +446,14 @@ final class DownloadStore: ObservableObject {
                 try handle.close()
                 try? FileManager.default.removeItem(at: destination)
                 try FileManager.default.moveItem(at: partial, to: destination)
+                saved.append(destination)
             }
+            guard generation == startedIn else { throw CancellationError() }
         } catch {
-            for (_, file) in files {
-                try? FileManager.default.removeItem(at: folder.appending(path: file))
-                try? FileManager.default.removeItem(at: folder.appending(path: file + Self.joiningSuffix))
-            }
+            for (_, file) in files { try? FileManager.default.removeItem(at: folder.appending(path: file + partialSuffix)) }
+            for file in saved { try? FileManager.default.removeItem(at: file) }
             throw error
         }
-        guard generation == startedIn else { throw CancellationError() }
         lastReport = "Last download: \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) in \(Int(Date().timeIntervalSince(started))) s (SABR)"
         items.insert(Item(video: video, videoFile: files[0].1, audioFile: files[1].1), at: 0)
         save()
@@ -516,7 +519,7 @@ final class DownloadStore: ObservableObject {
             return
         }
         let startedIn = generation
-        let backgroundTask = UIApplication.shared.beginBackgroundTask(expirationHandler: nil)
+        let backgroundTask = Self.beginBackgroundTime()
         Task {
             defer { UIApplication.shared.endBackgroundTask(backgroundTask) }
             try? await Task.sleep(for: .seconds(Self.retryDelaySeconds * Double(tries)))
@@ -544,7 +547,8 @@ final class DownloadStore: ObservableObject {
                   let audioURL = stream.audioURL.flatMap(URL.init(string:)),
                   generation == startedIn else { return }
             let chunks = Self.chunks(of: job.videoFile, url: videoURL, size: stream.videoSize) + Self.chunks(of: job.audioFile, url: audioURL, size: stream.audioSize)
-            guard chunks.map(\.range) == job.chunks.map(\.range), chunks.map(\.name) == job.chunks.map(\.name) else { return }
+            guard chunks.map(\.range) == job.chunks.map(\.range), chunks.map(\.name) == job.chunks.map(\.name),
+                  self.job?.video.videoId == job.video.videoId else { return }
             self.job?.chunks = chunks
             savePending()
         }
@@ -574,7 +578,7 @@ final class DownloadStore: ObservableObject {
         isJoining = true
         let folder = Self.folder
         let startedIn = generation
-        let backgroundTask = UIApplication.shared.beginBackgroundTask(expirationHandler: nil)
+        let backgroundTask = Self.beginBackgroundTime()
         Task {
             defer { UIApplication.shared.endBackgroundTask(backgroundTask) }
             do {
@@ -582,7 +586,13 @@ final class DownloadStore: ObservableObject {
                     try Self.join(job.chunks, into: job.videoFile, in: folder)
                     try Self.join(job.chunks, into: job.audioFile, in: folder)
                 }.value
-                guard generation == startedIn else { return }
+                guard generation == startedIn else {
+                    // The work was dropped while joining. A saved job joins again when it resumes.
+                    for file in [job.videoFile, job.audioFile] where !items.contains(where: { $0.videoFile == file || $0.audioFile == file }) {
+                        try? FileManager.default.removeItem(at: folder.appending(path: file))
+                    }
+                    return
+                }
                 let seconds = Date().timeIntervalSince(job.started)
                 let bytes = job.chunks.reduce(Int64(0)) { $0 + $1.size }
                 lastReport = "Last download: \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) in \(Int(seconds)) s"
@@ -1037,7 +1047,7 @@ final class FilePicker: NSObject, UIDocumentPickerDelegate {
 
     func present(attempt: Int = 0) {
         guard let top = Self.topController() else {
-            FileLog.shared.append("downloads", "WARN", "file picker: no screen to show it on")
+            FileLog.shared.append("downloads", "WARNING", "file picker: no screen to show it on")
             return
         }
         if top.isBeingDismissed, attempt < Self.maxRetries {
@@ -1053,7 +1063,7 @@ final class FilePicker: NSObject, UIDocumentPickerDelegate {
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         FileLog.shared.append("downloads", "INFO", "picked \(urls.count) files")
-        DownloadStore.shared.addFiles(urls, moving: true)
+        DownloadStore.shared.addFiles(urls)
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {

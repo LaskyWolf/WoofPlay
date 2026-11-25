@@ -9,7 +9,8 @@ struct CaptionChoices: View {
 
     var body: some View {
         Button("Off", systemImage: "xmark") { onSelect(nil) }
-        ForEach(tracks, id: \.languageCode) { track in
+        // Two tracks can share a language, such as YouTube's own and the automatic one.
+        ForEach(Array(tracks.enumerated()), id: \.offset) { _, track in
             Button {
                 onSelect(track)
             } label: {

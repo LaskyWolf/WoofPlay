@@ -134,7 +134,10 @@ final class WatchTogether {
 
     func leave() {
         leaving = true
-        if isInRoom { connection?.send(LTMessage.leaveRoom) }
+        if isInRoom, let connection {
+            connection.close(sending: LTMessage.leaveRoom)
+            self.connection = nil
+        }
         shutDown()
         resetRoom()
         status = .idle
@@ -357,7 +360,10 @@ final class WatchTogether {
             isHost ? hostReceived(playback) : guestApply(playback)
         case LTMessage.syncState:
             let state = try LTSyncState(decoding: payload)
-            if isGuest { guestLoad(state.currentTrack, revision: 0) }
+            if isGuest { guestSync(state) }
+        case LTMessage.bufferComplete:
+            // Everyone has loaded the video, so the room's position and play state are asked for.
+            if isGuest { connection?.send(LTMessage.requestSync) }
 
         case LTMessage.suggestionReceived:
             suggestions.append(try LTSuggestion.decode(.received, payload))
@@ -402,7 +408,7 @@ final class WatchTogether {
         if let state = joined.state {
             users = state.users
             setHost(state.hostId)
-            if isGuest { guestLoad(state.currentTrack, revision: 0) }
+            if isGuest { guestLoad(state.currentTrack, revision: state.revision) }
         } else {
             // A new room: just this phone, as its host.
             users = [LTUser(userId: joined.userId, username: myName, isHost: true, isConnected: true)]
@@ -595,9 +601,24 @@ final class WatchTogether {
         }
     }
 
+    /// Matches the room: its video, then its position and play state once that video has loaded.
+    private func guestSync(_ state: LTSyncState) {
+        guard let router, awaitingBuffer == nil, let track = state.currentTrack, track.id == router.current?.videoId else {
+            guestLoad(state.currentTrack, revision: state.revision)
+            return
+        }
+        let player = router.player
+        // A live stream plays at its live edge, so only play and pause are shared.
+        if !player.isLiveStream {
+            let elapsed = state.isPlaying && state.lastUpdate > 0 ? Double(max(0, serverNowMs - state.lastUpdate)) / 1000 : 0
+            let target = Double(state.position) / 1000 + elapsed
+            if abs(position(of: player) - target) > 0.5 { player.seek(to: target) }
+        }
+        player.setPaused(!state.isPlaying)
+    }
+
     /// Puts the room's video on this phone, paused: once it has loaded,
-    /// `buffer_ready` asks the server where the room is, and it answers with
-    /// a seek and a play.
+    /// `buffer_ready` tells the server, and its `buffer_complete` leads to `guestSync`.
     private func guestLoad(_ track: LTTrack?, revision: UInt64) {
         guard let router, let track, !track.id.isEmpty else { return }
         awaitingBuffer = (track.id, revision)

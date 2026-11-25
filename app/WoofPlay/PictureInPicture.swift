@@ -49,7 +49,8 @@ final class PictureInPicture: NSObject, ObservableObject, AVPictureInPictureCont
                 guard let self, let timebase else { return }
                 CMTimebaseSetRate(timebase, rate: isPaused ? 0 : speed)
                 updateAutomaticStart(isPaused: isPaused)
-                refreshWindow()
+                // @Published sends before the value changes, so the window reads it on the next turn.
+                DispatchQueue.main.async { [weak self] in self?.refreshWindow() }
             }
             .store(in: &subscriptions)
         player.$duration

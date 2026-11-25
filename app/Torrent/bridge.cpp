@@ -139,6 +139,7 @@ void wp_session_destroy(wp_session *session) {
 }
 
 int wp_add_magnet(wp_session *session, const char *magnet, const char *save_path, char *out, int out_len) {
+    if (!session) { copy_out("No torrent session", out, out_len); return -1; }
     try {
         lt::error_code error;
         lt::add_torrent_params params = lt::parse_magnet_uri(magnet, error);
@@ -164,6 +165,7 @@ int wp_add_magnet(wp_session *session, const char *magnet, const char *save_path
 }
 
 void wp_remove(wp_session *session, const char *id, int delete_files) {
+    if (!session) return;
     try {
         session->rejected.erase(id);
         for (auto const &handle : session->session.get_torrents()) {
@@ -175,6 +177,7 @@ void wp_remove(wp_session *session, const char *id, int delete_files) {
 }
 
 int wp_status(wp_session *session, char *out, int out_len) {
+    if (!session) return copy_out("[]", out, out_len);
     try {
         handle_alerts(session);
         std::string json = "[";

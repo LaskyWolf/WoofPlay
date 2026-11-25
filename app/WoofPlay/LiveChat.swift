@@ -107,8 +107,15 @@ final class LiveChatModel: ObservableObject {
     /// Twitch's chat sends no pictures, so they come from its API: each new name once, in one request.
     private var twitchAvatars: [String: String] = [:]
     private var askedAvatars: Set<String> = []
+    private static let avatarsKept = 1000
 
     private func fillTwitchAvatars() {
+        // A busy chat brings thousands of names over hours, so only those still on screen are kept.
+        if askedAvatars.count > Self.avatarsKept {
+            let shown = Set(messages.map(\.authorKey))
+            askedAvatars.formIntersection(shown)
+            twitchAvatars = twitchAvatars.filter { shown.contains($0.key) }
+        }
         let missing = Array(Set(messages.map(\.authorKey)).subtracting(askedAvatars).filter { !$0.isEmpty }.prefix(100))
         applyTwitchAvatars()
         guard !missing.isEmpty else { return }

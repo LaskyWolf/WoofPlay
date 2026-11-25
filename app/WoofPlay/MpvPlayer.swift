@@ -164,7 +164,8 @@ final class MpvPlayer: ObservableObject {
     }
 
     func skip(by seconds: Double) {
-        seek(to: min(max(time + seconds, 0), duration))
+        let target = max(time + seconds, 0)
+        seek(to: duration > 0 ? min(target, duration) : target)
     }
 
     /// Opens the stream again, which starts at its newest moment.
@@ -190,6 +191,8 @@ final class MpvPlayer: ObservableObject {
     }
 
     func stop() {
+        loadedURL = nil
+        hasEnded = false
         clock.time = 0
         duration = 0
         isBuffering = false

@@ -137,6 +137,7 @@ final class Session: ObservableObject {
     private func openStorage(of accountId: String) {
         let storage = ProfileStorage.claim(for: accountId)
         guard storage != ProfileStorage.active else { return }
+        SeenVideos.save()
         ProfileStorage.activate(storage)
         WatchPositions.reload()
         SeenVideos.reload()

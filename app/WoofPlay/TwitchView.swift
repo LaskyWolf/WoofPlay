@@ -93,6 +93,8 @@ struct TwitchSignInView: View {
                     ProgressView()
                     Text("Waiting for Twitch…").foregroundStyle(.secondary)
                 }
+            } else if error != nil, !isWorking {
+                Button("Try Again", systemImage: "arrow.clockwise") { start() }
             } else {
                 HStack(spacing: Layout.chipSpacing) {
                     ProgressView()

@@ -450,7 +450,8 @@ actor StreamCache {
         do {
             let stream = try await task.value
             // A live stream's address is the live edge, and playing it later would start behind.
-            if stream.isLive { entries[key] = nil }
+            // A SABR address points at SABRServer, which forgets old playbacks long before this cache would.
+            if stream.isLive || stream.sabr != nil { entries[key] = nil }
             return stream
         } catch {
             entries[key] = nil

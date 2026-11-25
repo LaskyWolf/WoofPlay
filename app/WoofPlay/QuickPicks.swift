@@ -31,7 +31,6 @@ final class QuickPins {
 /// Woof Music's Quick Picks for videos: pages of 2 × 3 covers, pinned videos first, then the top of Home.
 struct QuickPicksSection: View {
     let picks: [(video: YouTubeVideo, isPinned: Bool)]
-    @Environment(Router.self) private var router
     @State private var page: Int? = 0
 
     static let columns = 2

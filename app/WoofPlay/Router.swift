@@ -125,7 +125,7 @@ final class Router {
         player.setProperty("loop-file", "inf")
         return player
     }()
-    @ObservationIgnored private(set) lazy var sleepTimer = SleepTimer { [weak self] in self?.player.setPaused(true) }
+    @ObservationIgnored private(set) lazy var sleepTimer = SleepTimer { [weak self] in self?.activePlayer.setPaused(true) }
     static let qualities = [2160, 1440, 1080, 720, 480, 360]
     static let speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
     private static let maxHeightKey = "maxHeight"
@@ -606,7 +606,8 @@ final class Router {
         guard let current, current.twitchLogin == nil, player.duration > 0 else { return }
         WatchPositions.save(videoId: current.videoId, time: time, duration: player.duration)
         watchReporter?.tick(time)
-        let active = usesSponsorBlock ? sponsorSegments.filter { $0.range.contains(time) && !skippedSegments.contains($0.id) } : []
+        // A Watch Together guest follows the host, whose skips arrive as seeks.
+        let active = usesSponsorBlock && !WatchTogether.shared.isGuest ? sponsorSegments.filter { $0.range.contains(time) && !skippedSegments.contains($0.id) } : []
         if let segment = active.first(where: { $0.category.action == .skip }) {
             skip(segment)
         } else {
@@ -742,8 +743,12 @@ final class Router {
         streamSummary = "Twitch"
         loadTask = Task {
             do {
-                guard let url = try await Twitch.mediaURL(videoId: videoId, maxHeight: maxHeight) else { return }
+                let found = try await Twitch.mediaURL(videoId: videoId, maxHeight: maxHeight)
                 guard !Task.isCancelled else { return }
+                guard let url = found else {
+                    loadError = "Twitch has no video at this link."
+                    return
+                }
                 player.load(url: url.absoluteString, start: start)
                 updateNowPlaying()
             } catch {

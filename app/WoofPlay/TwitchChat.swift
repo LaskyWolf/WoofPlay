@@ -2,30 +2,61 @@ import SwiftUI
 
 /// Twitch chat is IRC over a WebSocket. Without a sign-in it reads as a guest named justinfan.
 extension LiveChatModel {
+    /// Connects again when Twitch asks to or the connection drops, waiting longer after each failure.
     func runTwitch(channel: String, credentials: (login: String, token: String)?) async {
         twitchChannel = channel.lowercased()
         twitchLogin = credentials?.login
+        var wait = Self.firstRetryWait
+        while !Task.isCancelled {
+            let started = ContinuousClock.now
+            let askedToReconnect = await connectTwitch(credentials: credentials)
+            guard !Task.isCancelled else { return }
+            canSend = false
+            if askedToReconnect || started.duration(to: .now) > Self.stableConnection {
+                wait = Self.firstRetryWait
+            }
+            if !askedToReconnect {
+                try? await Task.sleep(for: wait)
+                wait = min(wait * 2, Self.longestRetryWait)
+            }
+        }
+    }
+
+    private static var firstRetryWait: Duration { .seconds(1) }
+    private static var longestRetryWait: Duration { .seconds(60) }
+    /// A connection that lasted this long was working, so the next failure starts the waits over.
+    private static var stableConnection: Duration { .seconds(60) }
+
+    /// One connection, until it fails or Twitch sends RECONNECT. Returns true for RECONNECT.
+    private func connectTwitch(credentials: (login: String, token: String)?) async -> Bool {
         let socket = URLSession.shared.webSocketTask(with: URL(string: "wss://irc-ws.chat.twitch.tv:443")!)
         self.socket = socket
         socket.resume()
-        defer { socket.cancel(with: .goingAway, reason: nil) }
-        do {
-            try await send("CAP REQ :twitch.tv/tags twitch.tv/commands")
-            if let credentials {
-                try await send("PASS oauth:\(credentials.token)")
-                try await send("NICK \(credentials.login)")
-            } else {
-                try await send("NICK justinfan\(Int.random(in: 10_000..<100_000))")
-            }
-            try await send("JOIN #\(twitchChannel)")
-            while !Task.isCancelled {
-                guard case .string(let text) = try await socket.receive() else { continue }
-                for line in text.split(separator: "\r\n") {
-                    try await handle(String(line))
+        return await withTaskCancellationHandler {
+            defer { socket.cancel(with: .goingAway, reason: nil) }
+            do {
+                try await send("CAP REQ :twitch.tv/tags twitch.tv/commands")
+                if let credentials {
+                    try await send("PASS oauth:\(credentials.token)")
+                    try await send("NICK \(credentials.login)")
+                } else {
+                    try await send("NICK justinfan\(Int.random(in: 10_000..<100_000))")
                 }
+                try await send("JOIN #\(twitchChannel)")
+                while !Task.isCancelled {
+                    guard case .string(let text) = try await socket.receive() else { continue }
+                    for line in text.split(separator: "\r\n") {
+                        guard !Task.isCancelled else { return false }
+                        if try await handle(String(line)) { return true }
+                    }
+                }
+            } catch {
+                if !Task.isCancelled { status = error.localizedDescription }
             }
-        } catch {
-            if !Task.isCancelled { status = error.localizedDescription }
+            return false
+        } onCancel: {
+            // receive() waits for the next line otherwise, which may never come.
+            socket.cancel(with: .goingAway, reason: nil)
         }
     }
 
@@ -46,7 +77,8 @@ extension LiveChatModel {
         try await socket?.send(.string(line))
     }
 
-    private func handle(_ line: String) async throws {
+    /// Returns true when Twitch asks for a new connection.
+    private func handle(_ line: String) async throws -> Bool {
         guard let message = IRCLine(line) else { return }
         switch message.command {
         case "PING":
@@ -63,10 +95,12 @@ extension LiveChatModel {
         case "NOTICE":
             status = message.trailing
         case "RECONNECT":
-            status = "Twitch closed the chat. Open it again."
+            status = "Reconnecting…"
+            return true
         default:
             break
         }
+        return false
     }
 
     /// A chat line, Bits as a paid card, and subs, gifts and raids as events.

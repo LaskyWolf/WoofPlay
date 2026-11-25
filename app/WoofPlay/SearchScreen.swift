@@ -255,7 +255,8 @@ private struct SearchStart: View {
             }
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            hints = (try? await YouTubeSuggestions.fetch(text)) ?? []
+            guard let fetched = try? await YouTubeSuggestions.fetch(text), !Task.isCancelled else { return }
+            hints = fetched
         }
     }
 

@@ -50,8 +50,10 @@ enum MemberChannels {
     static func load() async {
         let profile = ProfileStorage.active
         guard loadedProfile != profile else { return }
+        ids = []
         guard let json = try? await FeedSource.browse("FEmemberships").fetch() else { return }
         let items = await offMain { FeedParser.items(in: json) }
+        guard ProfileStorage.active == profile else { return }
         ids = Set(items.compactMap { item -> String? in
             if case .video(let video, _) = item { return video.channelId }
             return nil
@@ -151,13 +153,15 @@ final class FeedModel {
             if isHome {
                 let file = SavedHome.file
                 await offMain { SavedHome.write(json, to: file) }
-            }
-            if !keepChips { chips = parsed.2 }
-            nextToken = parsed.1
-            if isHome {
-                page = await freshHomeRows(from: page)
                 guard generation == loadGeneration else { return }
             }
+            var token = parsed.1
+            if isHome {
+                (page, token) = await freshHomeRows(from: page, token: token)
+                guard generation == loadGeneration else { return }
+            }
+            if !keepChips { chips = parsed.2 }
+            nextToken = token
             page = FeedParser.arrangingShorts(page, keepsOrder: isPlaylist)
             if items.isEmpty {
                 withAnimation(.easeOut(duration: 0.25)) { items = page }
@@ -224,8 +228,10 @@ final class FeedModel {
     }
 
     /// Falls back to the page as it came, rather than showing nothing to someone who has seen it all.
-    private func freshHomeRows(from page: [FeedItem]) async -> [FeedItem] {
+    /// Returns the rows and the token for the page after the last one it read.
+    private func freshHomeRows(from page: [FeedItem], token: String?) async -> ([FeedItem], String?) {
         var fresh = SeenVideos.removing(from: page)
+        var nextToken = token
         var skipped = 0
         while fresh.count < Self.freshRowsWanted, skipped < Self.pagesToSkip, let token = nextToken,
               let json = try? await InnerTubeClient.woofplay.browse(continuation: token) {
@@ -235,7 +241,7 @@ final class FeedModel {
             let known = Set(fresh.map(\.id))
             fresh += SeenVideos.removing(from: more).filter { !known.contains($0.id) && shows($0) }
         }
-        return fresh.isEmpty ? page : fresh
+        return (fresh.isEmpty ? page : fresh, nextToken)
     }
 
     /// Home leaves out Mixes and members-only videos. Subscriptions keep the latter only for channels you're a member of.
@@ -310,7 +316,10 @@ final class FeedModel {
         let model = FeedModel()
         await model.load(.browse(YouTubeFeeds.playlistBrowseId(playlistId)))
         while model.hasMore, let last = model.items.last {
+            let count = model.items.count
             await model.loadMore(after: last)
+            // A failed page keeps its token, so stop instead of asking again forever.
+            if model.items.count == count { break }
         }
         return model.videos
     }

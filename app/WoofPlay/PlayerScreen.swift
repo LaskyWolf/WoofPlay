@@ -1630,6 +1630,7 @@ private struct WatchDetailsView: View {
     var body: some View {
         if let video = router.current, video.twitchLogin != nil {
             TwitchWatchDetails(video: video)
+                .id(video.videoId)
         } else if let video = router.current, video.isTwitch {
             TwitchMediaDetails(video: video)
         } else {

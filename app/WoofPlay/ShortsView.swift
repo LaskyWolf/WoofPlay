@@ -103,7 +103,9 @@ final class ShortsModel: ObservableObject {
         let json = try? await InnerTubeClient.woofplay.next(videoId: video.videoId)
         guard !Task.isCancelled else { return }
         let videoId = video.videoId
-        details = await offMain { json.map { WatchDetails(json: $0, videoId: videoId) } }
+        let parsed = await offMain { json.map { WatchDetails(json: $0, videoId: videoId) } }
+        guard !Task.isCancelled else { return }
+        details = parsed
         async let dislikes = DislikeCounts.fetch(videoId: video.videoId)
         async let comment = CommentsPage.topComment(token: details?.commentsToken)
         let (dislikeCount, topComment) = await (dislikes, comment)
@@ -113,14 +115,15 @@ final class ShortsModel: ObservableObject {
         isLoadingDetails = false
     }
 
-    func setLike(_ status: String, video: YouTubeVideo) async {
+    /// Puts the old status back when YouTube refuses, and passes the error on.
+    func setLike(_ status: String, video: YouTubeVideo) async throws {
         guard let previous = details?.likeStatus else { return }
         details?.likeStatus = status
         do {
             try await YouTubeAPI.setLike(status, videoId: video.videoId)
         } catch {
             if playingId == video.videoId { details?.likeStatus = previous }
-            errorText = error.localizedDescription
+            throw error
         }
     }
 
@@ -440,7 +443,7 @@ struct ShortsView: View {
         return VStack(spacing: Layout.screenPadding) {
             Button {
                 likeTaps += 1
-                Task { await model.setLike(isLiked ? "INDIFFERENT" : "LIKE", video: video) }
+                router.run { try await model.setLike(isLiked ? "INDIFFERENT" : "LIKE", video: video) }
             } label: {
                 RailLabel(icon: isLiked ? "hand.thumbsup.fill" : "hand.thumbsup", text: (isLiked ? details?.likeCountLiked : details?.likeCount) ?? "Like", isActive: isLiked, motion: isLiked ? .deflate : .like(emojis: VideoFlavor.emojis(for: video.title)), trigger: likeTaps)
             }
@@ -448,7 +451,7 @@ struct ShortsView: View {
             .accessibilityAddTraits(isLiked ? .isSelected : [])
             Button {
                 dislikeTaps += 1
-                Task { await model.setLike(isDisliked ? "INDIFFERENT" : "DISLIKE", video: video) }
+                router.run { try await model.setLike(isDisliked ? "INDIFFERENT" : "DISLIKE", video: video) }
             } label: {
                 RailLabel(icon: isDisliked ? "hand.thumbsdown.fill" : "hand.thumbsdown", text: details?.dislikeCount.map { ($0 + (isDisliked ? 1 : 0)).compactText } ?? "Dislike", isActive: isDisliked, motion: isDisliked ? .rise : .dislike, trigger: dislikeTaps)
             }

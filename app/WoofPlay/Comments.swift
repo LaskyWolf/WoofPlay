@@ -153,6 +153,7 @@ final class CommentsModel: ObservableObject {
     @Published private(set) var didFailLoading = false
     private(set) var createParams: String?
     private var nextToken: String?
+    private var loadGeneration = 0
 
     struct ReportRequest: Identifiable {
         let comment: Comment
@@ -179,12 +180,17 @@ final class CommentsModel: ObservableObject {
         }
     }
 
-    func load(token: String) async {
-        defer { isLoading = false }
+    /// The first page in this order. A newer call makes an older answer drop out.
+    func load(token: String, order: CommentSort = .top) async {
+        loadGeneration += 1
+        let generation = loadGeneration
+        defer { if generation == loadGeneration { isLoading = false } }
         didFailLoading = false
         isLoading = true
         do {
             let result = try await page(token)
+            guard generation == loadGeneration else { return }
+            sortOrder = order
             comments = result.comments
             nextToken = result.nextToken
             title = result.page?.totalCountText ?? title
@@ -192,24 +198,26 @@ final class CommentsModel: ObservableObject {
             if let params = result.page?.createCommentParams { createParams = params }
             if let tokens = result.page?.sortTokens, !tokens.isEmpty { sortTokens = tokens }
         } catch {
+            guard generation == loadGeneration else { return }
             didFailLoading = true
         }
     }
 
     func sort(by order: CommentSort) async {
         guard order != sortOrder, let token = sortTokens[order] else { return }
-        sortOrder = order
         comments = []
-        await load(token: token)
+        await load(token: token, order: order)
     }
 
     func loadMore(after comment: Comment) async {
         guard comment.id == comments.last?.id, let token = nextToken else { return }
+        let generation = loadGeneration
         nextToken = nil
         guard let result = try? await page(token) else {
-            nextToken = token
+            if generation == loadGeneration { nextToken = token }
             return
         }
+        guard generation == loadGeneration else { return }
         comments += result.comments
         nextToken = result.nextToken
     }

@@ -50,6 +50,12 @@ final class WatchTogetherConnection: NSObject, URLSessionWebSocketDelegate, @unc
         finish("closed by the app")
     }
 
+    /// Closes once `last` has gone out, so the server hears it.
+    func close(sending last: String) {
+        let envelope = LTEnvelope(type: last, payload: LTEmpty().encoded(), requestId: 0)
+        task?.send(.data(envelope.encoded())) { _ in self.close() }
+    }
+
     private func receive() {
         task?.receive { [weak self] result in
             guard let self else { return }

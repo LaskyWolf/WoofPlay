@@ -149,11 +149,15 @@ final class Subscriptions {
     private(set) var channels: [YouTubeChannel] = []
     private(set) var ids: Set<String> = []
     private(set) var isLoading = true
+    /// Each load and reset gets a number, so an answer for an older account is dropped.
+    private var generation = 0
 
     /// The side menu's list comes whole, while the channels page arrives in parts.
     func load() async {
+        generation += 1
+        let current = generation
         isLoading = true
-        defer { isLoading = false }
+        defer { if current == generation { isLoading = false } }
         var found: [YouTubeChannel] = []
         if let json = try? await YouTubeAPI.post("guide", body: [:]) {
             found = Self.guideChannels(in: JSON.first("guideSubscriptionsSectionRenderer", in: json) ?? [String: Any]())
@@ -164,13 +168,15 @@ final class Subscriptions {
                 return nil
             }
         }
-        guard !found.isEmpty else { return }
+        guard current == generation, !found.isEmpty else { return }
         channels = found.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         ids = Set(found.compactMap(\.channelId))
     }
 
     /// Another account took over.
     func reset() {
+        generation += 1
+        isLoading = false
         channels = []
         ids = []
     }

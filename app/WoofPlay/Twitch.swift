@@ -598,6 +598,8 @@ final class TwitchAccount: ObservableObject {
         let refreshToken: String
     }
 
+    private var refreshTask: Task<Void, Error>?
+
     /// Fills `login` and `userId`. A rejected token is renewed once, then the user is signed out.
     private func validate() async throws -> String {
         for attempt in 0..<2 {
@@ -619,7 +621,16 @@ final class TwitchAccount: ObservableObject {
         throw TwitchError("The Twitch sign-in expired. Sign in again.")
     }
 
+    /// Twitch accepts each refresh token once, so requests that hit 401 together wait for the same renewal.
     private func refresh() async throws {
+        if let refreshTask { return try await refreshTask.value }
+        let task = Task { try await renewToken() }
+        refreshTask = task
+        defer { refreshTask = nil }
+        try await task.value
+    }
+
+    private func renewToken() async throws {
         guard let refresh = token?.refresh else { throw TwitchError("Not signed in to Twitch.") }
         let data = try await post("token", ["client_id": appId, "grant_type": "refresh_token", "refresh_token": refresh])
         let reply = try Self.decoder.decode(TokenReply.self, from: data)
@@ -675,18 +686,15 @@ final class TwitchLive: ObservableObject {
     @Published private(set) var channels: [TwitchChannel] = []
     /// Live channels not followed, for Home and Up Next. Shown signed out too.
     @Published private(set) var suggested: [TwitchChannel] = []
-    @Published private(set) var error: String?
     private var loadedAt: Date?
     /// Home and the Twitch tab both ask on appear. Within this many seconds the last answer is still good.
     private static let freshFor: TimeInterval = 60
 
     func refresh(force: Bool = false) async {
         if !force, let loadedAt, Date().timeIntervalSince(loadedAt) < Self.freshFor { return }
-        do {
-            channels = TwitchAccount.shared.isSignedIn ? try await TwitchAccount.shared.liveFollowed() : []
-            error = nil
-        } catch {
-            self.error = error.localizedDescription
+        // A failure keeps the last list.
+        if let followed = try? await (TwitchAccount.shared.isSignedIn ? TwitchAccount.shared.liveFollowed() : []) {
+            channels = followed
         }
         var games: [String] = []
         for game in channels.map(\.game) where !game.isEmpty && !games.contains(game) { games.append(game) }
@@ -700,7 +708,6 @@ final class TwitchLive: ObservableObject {
     func clear() {
         channels = []
         suggested = []
-        error = nil
         loadedAt = nil
     }
 }

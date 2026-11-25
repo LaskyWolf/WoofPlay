@@ -84,7 +84,7 @@ struct SABRMessage {
                 fields[field, default: []].append(.number(value))
                 index += size
             case 2:
-                guard let length = varint(), index + Int(length) <= bytes.count else { return nil }
+                guard let length = varint(), length <= UInt64(bytes.count - index) else { return nil }
                 fields[field, default: []].append(.bytes(Data(bytes[index..<index + Int(length)])))
                 index += Int(length)
             default:

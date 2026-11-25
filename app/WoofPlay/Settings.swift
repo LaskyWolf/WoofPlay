@@ -334,12 +334,6 @@ enum AccountPlatform: String, CaseIterable, Identifiable {
     case twitch = "Twitch"
 
     var id: Self { self }
-    var systemImage: String {
-        switch self {
-        case .youTube: "play.rectangle.fill"
-        case .twitch: "dot.radiowaves.left.and.right"
-        }
-    }
 }
 
 private struct PlayerSettingsView: View {

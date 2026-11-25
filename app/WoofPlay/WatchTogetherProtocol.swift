@@ -39,12 +39,6 @@ struct ProtoWriter {
         uint(field, value ? 1 : 0)
     }
 
-    mutating func float(_ field: Int, _ value: Float) {
-        guard value != 0 else { return }
-        tag(field, 5)
-        withUnsafeBytes(of: value.bitPattern.littleEndian) { data.append(contentsOf: $0) }
-    }
-
     mutating func bytes(_ field: Int, _ value: Data) {
         guard !value.isEmpty else { return }
         tag(field, 2)
@@ -79,10 +73,6 @@ struct ProtoReader {
         }
         var int: Int64 { Int64(bitPattern: uint) }
         var bool: Bool { uint != 0 }
-        var float: Float {
-            if case .fixed32(let v) = self { return Float(bitPattern: v) }
-            return 0
-        }
         var data: Data {
             if case .bytes(let d) = self { return d }
             return Data()
@@ -113,7 +103,7 @@ struct ProtoReader {
     }
 
     private mutating func take(_ count: Int) throws -> [UInt8] {
-        guard count >= 0, index + count <= bytes.count else { throw Malformed() }
+        guard count >= 0, count <= bytes.count - index else { throw Malformed() }
         defer { index += count }
         return Array(bytes[index..<index + count])
     }
@@ -128,7 +118,9 @@ struct ProtoReader {
             switch key & 7 {
             case 0: value = .varint(try reader.varint())
             case 1: value = .fixed64(try reader.take(8).reversed().reduce(0) { $0 << 8 | UInt64($1) })
-            case 2: value = .bytes(Data(try reader.take(Int(try reader.varint()))))
+            case 2:
+                guard let length = Int(exactly: try reader.varint()) else { throw Malformed() }
+                value = .bytes(Data(try reader.take(length)))
             case 5: value = .fixed32(try reader.take(4).reversed().reduce(0) { $0 << 8 | UInt32($1) })
             default: throw Malformed()
             }
@@ -436,21 +428,6 @@ struct LTPlayback: ProtoMessage {
 }
 
 // MARK: - Server to client
-
-struct LTServerCapabilities: ProtoMessage {
-    var serverVersion = ""
-    var features: [String] = []
-    var canHost = false
-
-    mutating func read(_ field: Int, _ v: ProtoReader.Value) throws {
-        switch field {
-        case 3: serverVersion = v.string
-        case 4: features.append(v.string)
-        case 5: canHost = v.bool
-        default: break
-        }
-    }
-}
 
 /// room_created, join_approved and reconnected: where this client now is.
 struct LTJoined: ProtoMessage {

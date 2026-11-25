@@ -68,6 +68,7 @@ struct SleepTimerControls: View {
     @ObservedObject var timer: SleepTimer
     let isWide: Bool
     let onDone: () -> Void
+    @Environment(Router.self) private var router
     @State private var duration: TimeInterval
 
     private static let lastMinutesKey = "sleepTimerLastMinutes"
@@ -92,7 +93,7 @@ struct SleepTimerControls: View {
                 VStack(spacing: 16) {
                     status
                     buttons
-                    endOfVideo
+                    if !router.isLive { endOfVideo }
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -102,7 +103,7 @@ struct SleepTimerControls: View {
                 CountdownPicker(duration: $duration)
                     .frame(maxWidth: .infinity)
                 buttons
-                endOfVideo
+                if !router.isLive { endOfVideo }
             }
         }
     }

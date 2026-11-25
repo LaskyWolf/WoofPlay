@@ -65,11 +65,12 @@ final class TorrentStore: ObservableObject {
     }
 
     func cancel(_ job: Job) {
-        wp_remove(session, job.id, 1)
+        if session != nil { wp_remove(session, job.id, 1) }
         finish(job)
     }
 
     private func start(_ magnet: String, in folder: String) throws -> String {
+        guard session != nil else { throw TorrentError(message: "The torrent engine didn't start.") }
         let path = Self.root.appending(path: folder).path
         var out = [CChar](repeating: 0, count: 512)
         let result = wp_add_magnet(session, magnet, path, &out, Int32(out.count))
@@ -91,6 +92,7 @@ final class TorrentStore: ObservableObject {
     }
 
     private func refresh() {
+        guard session != nil else { return }
         let needed = Int(wp_status(session, nil, 0)) + 1
         var out = [CChar](repeating: 0, count: needed)
         wp_status(session, &out, Int32(needed))
@@ -102,7 +104,7 @@ final class TorrentStore: ObservableObject {
             case "finished":
                 // The folder goes once its files have moved out, which happens in the background.
                 let folder = Self.root.appending(path: job.folder)
-                DownloadStore.shared.addFiles(status.files.map { URL(filePath: $0) }, moving: true) {
+                DownloadStore.shared.addFiles(status.files.map { URL(filePath: $0) }) {
                     try? FileManager.default.removeItem(at: folder)
                 }
                 wp_remove(session, job.id, 0)
