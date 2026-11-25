@@ -373,7 +373,11 @@ struct TabHeader: View {
             }
             .animation(UIAccessibility.isReduceMotionEnabled ? .easeOut(duration: 0.2) : .smooth(duration: 0.5), value: Connectivity.shared.isOffline)
             if let inline {
-                inline.frame(maxWidth: .infinity, alignment: .leading)
+                ZStack(alignment: .leading) {
+                    // Keeps the width when the tab's filters are empty, so the icons stay on the right.
+                    Color.clear.frame(height: 0)
+                    inline
+                }
             } else {
                 Spacer()
             }
