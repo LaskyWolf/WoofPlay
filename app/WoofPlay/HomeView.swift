@@ -354,6 +354,8 @@ struct TabHeader: View {
     var isCompact = false
     var inline: AnyView?
     @EnvironmentObject private var session: Session
+    /// How far the filters fade out at each end of their row.
+    private static let filterFade: CGFloat = 24
 
     var body: some View {
         HStack(alignment: .center) {
@@ -377,6 +379,16 @@ struct TabHeader: View {
                     // Keeps the width when the tab's filters are empty, so the icons stay on the right.
                     Color.clear.frame(height: 0)
                     inline
+                        // The chips scroll in from under the title and out under the icons.
+                        .mask {
+                            HStack(spacing: 0) {
+                                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                                    .frame(width: Self.filterFade)
+                                Color.black
+                                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                                    .frame(width: Self.filterFade)
+                            }
+                        }
                 }
             } else {
                 Spacer()
