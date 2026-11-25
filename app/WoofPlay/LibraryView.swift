@@ -266,8 +266,9 @@ struct LibraryView: View {
     }
 
     /// Built from the video's id, because YouTube sends some list entries with an unusable picture.
+    /// Files added from the phone have no YouTube cover, so they're left out.
     private func covers(_ videos: [YouTubeVideo]) -> [String] {
-        videos.prefix(2).map { YouTubeVideo.cover(of: $0.videoId) }
+        videos.filter { !$0.videoId.hasPrefix(DownloadStore.localPrefix) }.prefix(2).map { YouTubeVideo.cover(of: $0.videoId) }
     }
 
     /// The hidden Liked Videos playlist has a cover of its own, for when its videos don't load.
@@ -564,17 +565,19 @@ struct ShortcutTile: View {
         }
         .frame(maxWidth: .infinity)
         .background {
-            ZStack {
-                LinearGradient(colors: [tint, tint.mix(with: .black, by: 0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                LinearGradient(colors: [.white.opacity(0.16), .clear], startPoint: .top, endPoint: .center)
-                Image(systemName: icon)
-                    .font(.system(size: 66, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.3))
-                    .rotationEffect(.degrees(-18))
-                    .offset(x: 19, y: 9)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-            }
-            .clipShape(Self.shape)
+            LinearGradient(colors: [tint, tint.mix(with: .black, by: 0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay {
+                    LinearGradient(colors: [.white.opacity(0.16), .clear], startPoint: .top, endPoint: .center)
+                }
+                // An overlay, so the icon can't make the background taller than the tile.
+                .overlay(alignment: .trailing) {
+                    Image(systemName: icon)
+                        .font(.system(size: isWide ? 48 : 66, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.3))
+                        .rotationEffect(.degrees(-18))
+                        .offset(x: isWide ? 12 : 19, y: isWide ? 6 : 9)
+                }
+                .clipShape(Self.shape)
             .shadow(color: tint.opacity(0.4), radius: 6, y: 4)
             .accessibilityHidden(true)
         }
