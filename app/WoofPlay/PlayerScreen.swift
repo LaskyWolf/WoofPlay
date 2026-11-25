@@ -2254,6 +2254,7 @@ struct ChannelView: View {
     @State private var isFeaturedPinned = false
     @State private var avatar: String?
     @State private var twitchStream: TwitchChannel?
+    @State private var youTubeLive: YouTubeVideo?
     @State private var isSearching = false
     @Namespace private var searchMorph
 
@@ -2308,12 +2309,19 @@ struct ChannelView: View {
                 } else {
                     header(topInset: topInset)
                 }
-                // A stream on Twitch takes the featured card; the latest video then stays in the list.
-                if let live = twitchStream {
-                    SectionTitle(title: "Live on Twitch")
-                    TwitchStreamRow(channel: live)
-                        .padding(.horizontal, Layout.screenPadding)
-                        .padding(.bottom, Layout.rowPadding)
+                // A stream, on YouTube or Twitch, takes the featured card; the latest video then stays in the list.
+                if isLive {
+                    SectionTitle(title: youTubeLive == nil ? "Live on Twitch" : "Live Now")
+                    if let live = youTubeLive {
+                        VideoButton(video: live)
+                            .padding(.horizontal, Layout.screenPadding)
+                            .padding(.bottom, Layout.rowPadding)
+                    }
+                    if let live = twitchStream {
+                        TwitchStreamRow(channel: live)
+                            .padding(.horizontal, Layout.screenPadding)
+                            .padding(.bottom, Layout.rowPadding)
+                    }
                 } else if let featured {
                     SectionTitle(title: isFeaturedPinned ? "Pinned Video" : "Latest Video")
                     VideoButton(video: featured)
@@ -2336,9 +2344,13 @@ struct ChannelView: View {
                         .padding(.bottom, Layout.sectionGap)
                 }
             }
+            // The banner stays at the screen's top, so the page doesn't pull down past it.
+            .noPullAtTop()
         }
         .detailBarTitle(page?.channel?.title ?? "")
     }
+
+    private var isLive: Bool { youTubeLive != nil || twitchStream != nil }
 
     /// Stands in for the whole header, so the real buttons only ever appear in their final place.
     private var loadingHeader: some View {
@@ -2450,7 +2462,7 @@ struct ChannelView: View {
             latest.channelAvatarURL = nil
             featured = latest
         }
-        if twitchStream == nil, let featuredId = featured?.videoId, let item = model.items.first(where: { $0.id == featuredId }) {
+        if !isLive, let featuredId = featured?.videoId, let item = model.items.first(where: { $0.id == featuredId }) {
             model.remove(item)
         }
     }
@@ -2461,6 +2473,10 @@ struct ChannelView: View {
         guard page == nil, let json = try? await InnerTubeClient.woofplay.browse(browseId: channelId) else { return }
         page = await offMain { YouTubeChannelParser.channelPage(in: json) }
         avatar = Self.avatarURL(in: json)
+        // The Home tab lists the channel's streams. A shelf can also show other channels' videos.
+        youTubeLive = await offMain { [channelId] in
+            YouTubeFeedParser.videos(in: json).first { $0.isLive && ($0.channelId == nil || $0.channelId == channelId) }
+        }
         let pageText = await offMain { (try? JSONSerialization.data(withJSONObject: json)).map { String(decoding: $0, as: UTF8.self) } ?? "" }
         let channel = page?.channel
         // Asked alongside the videos, and answered before the latest video leaves the list.

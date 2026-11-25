@@ -246,6 +246,38 @@ struct ChannelBanner: View {
     }
 }
 
+/// SwiftUI turns off bouncing at both ends or neither. This finds the scroll view around it and holds it at its top,
+/// so the page can't be pulled down while the bottom still bounces.
+private struct NoPullAtTop: UIViewRepresentable {
+    final class Coordinator {
+        var observation: NSKeyValueObservation?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> UIView { UIView() }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        let coordinator = context.coordinator
+        guard coordinator.observation == nil else { return }
+        // The view joins the scroll view only after this first update.
+        DispatchQueue.main.async {
+            guard coordinator.observation == nil,
+                  let scrollView = sequence(first: view, next: \.superview).first(where: { $0 is UIScrollView }) as? UIScrollView else { return }
+            coordinator.observation = scrollView.observe(\.contentOffset) { scrollView, _ in
+                let top = -scrollView.adjustedContentInset.top
+                if scrollView.contentOffset.y < top { scrollView.contentOffset.y = top }
+            }
+        }
+    }
+}
+
+extension View {
+    /// Goes on the scroll view's content.
+    func noPullAtTop() -> some View {
+        background { NoPullAtTop() }
+    }
+}
+
 /// An image that fills whatever frame it gets.
 struct CoverImage: View {
     let url: String?
