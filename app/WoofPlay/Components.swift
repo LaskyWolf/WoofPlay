@@ -138,6 +138,8 @@ private struct DetailBarTitle: ViewModifier {
     let title: String
     let pinnedTitle: String?
     @State private var isHeaderScrolledAway = false
+    /// In landscape the header stays in its side column, so it never scrolls away.
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     func body(content: Content) -> some View {
         content
@@ -146,7 +148,7 @@ private struct DetailBarTitle: ViewModifier {
             } action: { _, isScrolledAway in
                 isHeaderScrolledAway = isScrolledAway
             }
-            .navigationTitle(pinnedTitle ?? (isHeaderScrolledAway ? title : ""))
+            .navigationTitle(pinnedTitle ?? (isHeaderScrolledAway && verticalSizeClass != .compact ? title : ""))
     }
 }
 
@@ -154,6 +156,51 @@ extension View {
     /// Goes on the ScrollView of a page that starts with `DetailHeaderCard`.
     func detailBarTitle(_ title: String, pinnedTitle: String? = nil) -> some View {
         modifier(DetailBarTitle(title: title, pinnedTitle: pinnedTitle))
+    }
+
+    /// Woof Music's landscape page: on a phone on its side the header stays in a left column
+    /// while the list scrolls beside it, over one blurred cover that reaches every edge.
+    /// The page then leaves the header out of its list.
+    /// `isShown` false keeps the page as it is, for a page with no header to show.
+    func detailSideHeader<Header: View>(url: String?, isShown: Bool = true, @ViewBuilder header: () -> Header) -> some View {
+        modifier(DetailSideHeader(url: url, isShown: isShown, header: header()))
+    }
+}
+
+private struct DetailSideHeader<Header: View>: ViewModifier {
+    let url: String?
+    let isShown: Bool
+    let header: Header
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    /// The header column's share of the width. Computed, since a generic type can't store a static.
+    private static var headerShare: CGFloat { 0.45 }
+
+    func body(content: Content) -> some View {
+        if verticalSizeClass == .compact, isShown {
+            content
+                // The blur is behind the whole page, so the rows drop their own backing.
+                .environment(\.rowsOverBlur, true)
+                .safeAreaInset(edge: .leading, spacing: 0) {
+                    ScrollView {
+                        header.controlSize(.large)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .containerRelativeFrame(.horizontal) { width, _ in width * Self.headerShare }
+                }
+                .background {
+                    Color.clear
+                        .overlay { CachedImage(url: url) }
+                        .clipped()
+                        .blur(radius: 40, opaque: true)
+                        .opacity(0.7)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+        } else {
+            content
+        }
     }
 }
 
@@ -218,6 +265,7 @@ struct VideoListHeader: View {
     let onPlayAll: () -> Void
     @Environment(Router.self) private var router
     @EnvironmentObject private var settings: AppSettings
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var shuffleTaps = 0
 
     var body: some View {
@@ -244,7 +292,10 @@ struct VideoListHeader: View {
         .padding(.vertical, Layout.screenPadding)
         .frame(maxWidth: .infinity)
         .background(alignment: .top) {
-            BlurredArtworkBackdrop(url: cover)
+            // In landscape the side header's page-wide blur replaces this one.
+            if verticalSizeClass != .compact {
+                BlurredArtworkBackdrop(url: cover)
+            }
         }
     }
 }

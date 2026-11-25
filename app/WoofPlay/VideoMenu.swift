@@ -34,11 +34,12 @@ private struct VideoMenuModifier: ViewModifier {
     let onRemove: (() -> Void)?
     let onRemoveFromPlaylist: (() -> Void)?
     @Environment(Router.self) private var router
+    @Environment(\.rowsOverBlur) private var rowsOverBlur
     @State private var showsPlaylists = false
 
     func body(content: Content) -> some View {
         content
-            .liftedMenu(background: background) {
+            .liftedMenu(background: rowsOverBlur ? nil : background) {
                 VideoMenuItems(video: video, feedback: feedback, collaborators: collaborators, onRemove: onRemove, onRemoveFromPlaylist: onRemoveFromPlaylist, router: router, showsPlaylists: $showsPlaylists)
             }
             .sheet(isPresented: $showsPlaylists) {
@@ -50,6 +51,8 @@ private struct VideoMenuModifier: ViewModifier {
 extension EnvironmentValues {
     /// The playlist a row belongs to, for downloading its neighbours.
     @Entry var playlistVideos: [YouTubeVideo] = []
+    /// Rows on a blurred cover rather than the plain page, where a backing of the page's colour would show.
+    @Entry var rowsOverBlur = false
 }
 
 struct VideoMenuItems: View {

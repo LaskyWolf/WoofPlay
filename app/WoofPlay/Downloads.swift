@@ -904,6 +904,7 @@ struct DownloadsView: View {
     @Environment(Router.self) private var router
     @State private var confirmsRemoveAll = false
     @ObservedObject private var torrents = TorrentStore.shared
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     private var videos: [YouTubeVideo] { store.items.map(\.video) }
     private var cover: String? { videos.first.map { YouTubeVideo.cover(of: $0.videoId) } }
@@ -929,7 +930,8 @@ struct DownloadsView: View {
                             .buttonStyle(.borderedProminent)
                     }
                     .padding(.vertical, 48)
-                } else {
+                } else if verticalSizeClass != .compact || store.items.isEmpty {
+                    // In landscape the header sits in its own column instead.
                     header
                 }
                 if store.importing > 0 {
@@ -988,6 +990,7 @@ struct DownloadsView: View {
                 }
             }
         }
+        .detailSideHeader(url: cover, isShown: !store.items.isEmpty) { header }
         .detailBarTitle("Downloads")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)

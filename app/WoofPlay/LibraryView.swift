@@ -604,6 +604,7 @@ struct PlaylistPage: View {
     let playlistId: String
 
     @Environment(Router.self) private var router
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var model = FeedModel()
     @State private var newTitle: String?
     @State private var isRenaming = false
@@ -626,7 +627,10 @@ struct PlaylistPage: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                header
+                // In landscape the header sits in its own column instead.
+                if verticalSizeClass != .compact {
+                    header
+                }
                 if videos.isEmpty, model.isLoading {
                     LoadingRows(kind: .compact)
                 }
@@ -670,6 +674,7 @@ struct PlaylistPage: View {
                 }
             }
         }
+        .detailSideHeader(url: videos.first?.thumbnailURL) { header }
         .detailBarTitle(shownTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
