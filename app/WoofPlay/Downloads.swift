@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import MPVKit
 import Network
 import SwiftUI
 import SwiftyTube
@@ -328,17 +329,79 @@ final class DownloadStore: ObservableObject {
         folder.appending(path: id + "-cover.jpg")
     }
 
-    /// A frame a tenth of the way in, since a video often opens on black.
-    // ponytail: AVFoundation reads MP4, MOV and M4V only; MKV and WebM stay without a picture. Grab the frame with mpv if they matter.
+    /// AVFoundation first, since it reads MP4, MOV and M4V well. mpv reads the rest, like Matroska and WebM.
     nonisolated private static func makeCover(of video: URL, to file: URL) async {
+        var frame = try? await avFoundationFrame(of: video)
+        if frame == nil { frame = await offMain { mpvFrame(of: video) } }
+        guard let frame, let data = UIImage(cgImage: frame).jpegData(compressionQuality: 0.8) else {
+            FileLog.shared.append("downloads", "WARNING", "no cover for a .\(video.pathExtension) file")
+            return
+        }
+        try? data.write(to: file, options: .atomic)
+    }
+
+    /// A tenth of the way in, since a video often opens on black.
+    nonisolated private static let coverPoint = 0.1
+
+    nonisolated private static func avFoundationFrame(of video: URL) async throws -> CGImage {
         let asset = AVURLAsset(url: video)
-        guard let duration = try? await asset.load(.duration) else { return }
+        let duration = try await asset.load(.duration)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: ImageStore.feedPixels, height: ImageStore.feedPixels)
-        guard let frame = try? await generator.image(at: CMTimeMultiplyByFloat64(duration, multiplier: 0.1)),
-              let data = UIImage(cgImage: frame.image).jpegData(compressionQuality: 0.8) else { return }
-        try? data.write(to: file, options: .atomic)
+        return try await generator.image(at: CMTimeMultiplyByFloat64(duration, multiplier: coverPoint)).image
+    }
+
+    /// How long mpv may take to open the file and reach the frame.
+    nonisolated private static let mpvFrameTimeout = 15.0
+
+    /// A hidden mpv with no picture on screen and no sound, asked for one frame. Blocks, so it runs off the main thread.
+    nonisolated private static func mpvFrame(of video: URL) -> CGImage? {
+        guard let mpv = mpv_create() else { return nil }
+        defer { mpv_terminate_destroy(mpv) }
+        let options = [
+            ("vo", "null"), ("ao", "null"), ("aid", "no"), ("sid", "no"), ("hwdec", "no"),
+            ("pause", "yes"), ("keep-open", "yes"), ("start", "\(Int(coverPoint * 100))%")
+        ]
+        for (name, value) in options { mpv_set_option_string(mpv, name, value) }
+        guard mpv_initialize(mpv) >= 0,
+              ["loadfile", video.path].withUnsafeCArg({ mpv_command(mpv, $0) }) >= 0 else { return nil }
+        // The frame is ready once playback restarts at the start point.
+        let deadline = Date().addingTimeInterval(mpvFrameTimeout)
+        waiting: while Date() < deadline {
+            guard let event = mpv_wait_event(mpv, 1) else { continue }
+            switch event.pointee.event_id {
+            case MPV_EVENT_PLAYBACK_RESTART: break waiting
+            case MPV_EVENT_END_FILE, MPV_EVENT_SHUTDOWN: return nil
+            default: continue
+            }
+        }
+        // "video" leaves out subtitles. The answer is bgr0: blue, green, red and an unused byte per pixel.
+        var result = mpv_node()
+        guard ["screenshot-raw", "video"].withUnsafeCArg({ mpv_command_ret(mpv, $0, &result) }) >= 0 else { return nil }
+        defer { mpv_free_node_contents(&result) }
+        guard result.format == MPV_FORMAT_NODE_MAP, let map = result.u.list?.pointee else { return nil }
+        var width = 0, height = 0, stride = 0
+        var pixels: Data?
+        for index in 0..<Int(map.num) {
+            guard let key = map.keys[index] else { continue }
+            let value = map.values[index]
+            switch String(cString: key) {
+            case "w": width = Int(value.u.int64)
+            case "h": height = Int(value.u.int64)
+            case "stride": stride = Int(value.u.int64)
+            case "data":
+                if let bytes = value.u.ba, let start = bytes.pointee.data { pixels = Data(bytes: start, count: bytes.pointee.size) }
+            default: break
+            }
+        }
+        guard let pixels, width > 0, height > 0, let provider = CGDataProvider(data: pixels as CFData) else { return nil }
+        return CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: stride,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        )
     }
 
     /// Files added before pictures were made get theirs now.
