@@ -100,6 +100,8 @@ struct LibraryView: View {
                     }
                 }
             }
+            // Inside the header, the chips' sideways row would also take the pull and bounce up and down.
+            .tappingRefresh { await load() }
             .tabRoot(title: "Library", tab: .library, onAdd: {
                 newTitle = ""
                 isCreating = true
@@ -112,7 +114,6 @@ struct LibraryView: View {
                     }
                 }
             })
-            .tappingRefresh { await load() }
             .task {
                 guard Date().timeIntervalSince(lastLoad) > Self.reloadAfter else { return }
                 lastLoad = Date()
