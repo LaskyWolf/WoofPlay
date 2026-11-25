@@ -199,7 +199,8 @@ private struct DetailSideHeader<Header: View>: ViewModifier {
                         .accessibilityHidden(true)
                 }
         } else {
-            content
+            // In portrait the blurred cover sits behind the first rows.
+            content.environment(\.rowsOverBlur, isShown)
         }
     }
 }

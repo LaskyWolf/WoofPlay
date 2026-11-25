@@ -36,22 +36,46 @@ private struct VideoMenuModifier: ViewModifier {
     @Environment(Router.self) private var router
     @Environment(\.rowsOverBlur) private var rowsOverBlur
     @State private var showsPlaylists = false
+    @State private var size = CGSize.zero
 
     func body(content: Content) -> some View {
-        content
-            .liftedMenu(background: rowsOverBlur ? nil : background) {
-                VideoMenuItems(video: video, feedback: feedback, collaborators: collaborators, onRemove: onRemove, onRemoveFromPlaylist: onRemoveFromPlaylist, router: router, showsPlaylists: $showsPlaylists)
-            }
+        menu(on: content)
             .sheet(isPresented: $showsPlaylists) {
                 PlaylistPickerSheet(video: video)
             }
+    }
+
+    private var items: some View {
+        VideoMenuItems(video: video, feedback: feedback, collaborators: collaborators, onRemove: onRemove, onRemoveFromPlaylist: onRemoveFromPlaylist, router: router, showsPlaylists: $showsPlaylists)
+    }
+
+    /// Over a blurred cover a backing would show at rest, so only the lifted copy gets one.
+    @ViewBuilder
+    private func menu(on content: Content) -> some View {
+        if rowsOverBlur, let background {
+            content
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+                .contextMenu {
+                    items
+                } preview: {
+                    content
+                        .frame(width: size.width, height: size.height)
+                        .padding(Layout.rowPadding)
+                        .background(background, in: RoundedRectangle(cornerRadius: Layout.tileRadius, style: .continuous))
+                        .environment(router)
+                        // The page grows out of the row itself, not this copy.
+                        .environment(\.videoZoomSpace, nil)
+                }
+        } else {
+            content.liftedMenu(background: background) { items }
+        }
     }
 }
 
 extension EnvironmentValues {
     /// The playlist a row belongs to, for downloading its neighbours.
     @Entry var playlistVideos: [YouTubeVideo] = []
-    /// Rows on a blurred cover rather than the plain page, where a backing of the page's colour would show.
+    /// Rows on a blurred cover rather than the plain page, where a backing of the page's colour would show at rest.
     @Entry var rowsOverBlur = false
 }
 
