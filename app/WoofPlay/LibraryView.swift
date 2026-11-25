@@ -58,6 +58,8 @@ struct LibraryView: View {
                     // Like Music on iPad: the sections in a list, the picked one beside it.
                     HStack(alignment: .top, spacing: Layout.screenPadding) {
                         ScrollView { sidebar }
+                            // The tiles' coloured shadows reach past the column.
+                            .scrollClipDisabled()
                             .frame(width: Self.sidebarWidth)
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 0) {
@@ -174,24 +176,27 @@ struct LibraryView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ZoomLink(wholeLabel: true) {
-                PlaylistPage(title: "Liked Videos", playlistId: YouTubeFeeds.likedVideosPlaylistId)
-            } label: {
-                sidebarRow("Liked Videos", icon: "hand.thumbsup.fill", tint: .lime)
+            VStack(spacing: Layout.chipSpacing) {
+                ZoomLink(wholeLabel: true) {
+                    PlaylistPage(title: "Liked Videos", playlistId: YouTubeFeeds.likedVideosPlaylistId)
+                } label: {
+                    ShortcutTile(title: "Liked Videos", subtitle: "Synced", icon: "hand.thumbsup.fill", tint: .lime, covers: likedCovers, isWide: true)
+                }
+                ZoomLink(wholeLabel: true) {
+                    PlaylistPage(title: "Watch Later", playlistId: YouTubeFeeds.watchLaterPlaylistId)
+                } label: {
+                    ShortcutTile(title: "Watch Later", subtitle: countText(watchLater), icon: "clock.fill", tint: .yellow, covers: covers(watchLater.videos), isWide: true)
+                }
+                ZoomLink(wholeLabel: true) {
+                    DownloadsView()
+                } label: {
+                    ShortcutTile(title: "Downloads", subtitle: downloadsSubtitle, icon: "arrow.down.circle.fill", tint: .violet, covers: covers(downloads.items.map(\.video)), isWide: true)
+                }
+                .contextMenu {
+                    Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
+                }
             }
-            ZoomLink(wholeLabel: true) {
-                PlaylistPage(title: "Watch Later", playlistId: YouTubeFeeds.watchLaterPlaylistId)
-            } label: {
-                sidebarRow("Watch Later", icon: "clock.fill", tint: .yellow, count: watchLater.videos.isEmpty ? nil : watchLater.videos.count)
-            }
-            ZoomLink(wholeLabel: true) {
-                DownloadsView()
-            } label: {
-                sidebarRow("Downloads", icon: "arrow.down.circle.fill", tint: .violet, count: downloads.items.isEmpty ? nil : downloads.items.count)
-            }
-            .contextMenu {
-                Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
-            }
+            .buttonStyle(ZoomPressStyle())
             Spacer().frame(height: Layout.rowSpacing)
             pickRow(.playlists, title: "Playlists", icon: "list.bullet.rectangle.fill", count: shownPlaylists.count)
             pickRow(.channels, title: "Channels", icon: "person.2.fill", count: channelEntries.count)
@@ -203,23 +208,21 @@ struct LibraryView: View {
 
     private func pickRow(_ filter: Filter, title: String, icon: String, count: Int) -> some View {
         Button { sidebarPick = filter } label: {
-            sidebarRow(title, icon: icon, tint: Color(.systemGray), count: count, isPicked: sidebarPick == filter)
+            sidebarRow(title, icon: icon, count: count, isPicked: sidebarPick == filter)
         }
         .accessibilityAddTraits(sidebarPick == filter ? .isSelected : [])
     }
 
-    private func sidebarRow(_ title: String, icon: String, tint: Color, count: Int? = nil, isPicked: Bool = false) -> some View {
+    private func sidebarRow(_ title: String, icon: String, count: Int, isPicked: Bool) -> some View {
         HStack(spacing: Layout.rowSpacing - 2) {
             Image(systemName: icon)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(width: 28, height: 28)
-                .background(tint, in: .rect(cornerRadius: Layout.cardRadius - 1, style: .continuous))
+                .background(Color(.systemGray), in: .rect(cornerRadius: Layout.cardRadius - 1, style: .continuous))
             Text(title).foregroundStyle(Color.primary).lineLimit(1)
             Spacer(minLength: 0)
-            if let count {
-                Text("\(count)").font(.subheadline).foregroundStyle(.secondary)
-            }
+            Text("\(count)").font(.subheadline).foregroundStyle(.secondary)
         }
         .padding(.horizontal, Layout.rowSpacing - 2)
         .frame(minHeight: 44)
@@ -244,14 +247,7 @@ struct LibraryView: View {
             ZoomLink(wholeLabel: true) {
                 DownloadsView()
             } label: {
-                ShortcutTile(
-                    title: "Downloads",
-                    subtitle: downloads.importing > 0 ? "Adding files…"
-                        : downloads.items.isEmpty ? "Offline" : "\(downloads.items.count) \(downloads.items.count == 1 ? "video" : "videos")",
-                    icon: "arrow.down.circle.fill",
-                    tint: .violet,
-                    covers: covers(downloads.items.map(\.video))
-                )
+                ShortcutTile(title: "Downloads", subtitle: downloadsSubtitle, icon: "arrow.down.circle.fill", tint: .violet, covers: covers(downloads.items.map(\.video)))
             }
             .contextMenu {
                 Button("Add Files…", systemImage: "folder.badge.plus") { FilePicker.shared.present() }
@@ -261,6 +257,12 @@ struct LibraryView: View {
         .padding(.horizontal, Layout.screenPadding)
         .padding(.top, Layout.contentTopGap)
         .padding(.bottom, Layout.sectionGap)
+    }
+
+    private var downloadsSubtitle: String {
+        if downloads.importing > 0 { return "Adding files…" }
+        let count = downloads.items.count
+        return count == 0 ? "Offline" : "\(count) \(count == 1 ? "video" : "videos")"
     }
 
     /// Built from the video's id, because YouTube sends some list entries with an unusable picture.
@@ -528,33 +530,39 @@ struct ShortcutTile: View {
     let icon: String
     let tint: Color
     let covers: [String]
+    /// Landscape's sidebar: one short row, the text on the left and the covers on the right.
+    var isWide = false
 
     private static let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+    private static let height: CGFloat = 116
+    private static let wideHeight: CGFloat = 58
+    private static let coverWidth: CGFloat = 56
+    private static let fanShift: CGFloat = 24
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            fannedCovers
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.subheadline.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.caption2.weight(.semibold))
-                        .opacity(0.85)
-                        .lineLimit(1)
+        Group {
+            if isWide {
+                HStack(spacing: Layout.chipSpacing) {
+                    labels
+                    fannedCovers
+                        // The front cover sits this far right of the back one, past the ZStack's own width.
+                        .frame(width: Self.coverWidth + Self.fanShift, alignment: .leading)
+                        .accessibilityHidden(true)
                 }
+                .padding(.horizontal, Layout.rowSpacing)
+                .frame(height: Self.wideHeight)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    fannedCovers
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .accessibilityHidden(true)
+                    labels
+                }
+                .padding(10)
+                .frame(height: Self.height)
             }
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(10)
         .frame(maxWidth: .infinity)
-        .frame(height: 116)
         .background {
             ZStack {
                 LinearGradient(colors: [tint, tint.mix(with: .black, by: 0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -574,6 +582,24 @@ struct ShortcutTile: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var labels: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.subheadline.weight(.bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.caption2.weight(.semibold))
+                    .opacity(0.85)
+                    .lineLimit(1)
+            }
+        }
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     @ViewBuilder
     private var fannedCovers: some View {
         if let first = covers.first {
@@ -585,14 +611,14 @@ struct ShortcutTile: View {
                 }
                 cover(first)
                     .rotationEffect(.degrees(covers.count > 1 ? 6 : 0))
-                    .offset(x: covers.count > 1 ? 24 : 2, y: 2)
+                    .offset(x: covers.count > 1 ? Self.fanShift : 2, y: 2)
             }
         }
     }
 
     private func cover(_ url: String) -> some View {
         CoverImage(url: url)
-            .frame(width: 56, height: 32)
+            .frame(width: Self.coverWidth, height: 32)
             .clipShape(.rect(cornerRadius: Layout.rowPadding, style: .continuous))
             .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
     }
