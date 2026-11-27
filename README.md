@@ -62,7 +62,11 @@ Removing Twitch's ads breaks Twitch's Terms of Service.
 
 ## Install
 
-You need iOS 26 or later. This project does not publish IPA files, so you build your own.
+You need iOS 26 or later.
+
+**From the Flarestore source (easiest):** open https://woof-cloud.wolflasky.workers.dev/woofplay on your iPhone and tap **Add to SideStore** or **Add to AltStore**, or add `https://woof-cloud.wolflasky.workers.dev/flarestore/source.json` as a source by hand. Install the app from there; updates arrive the same way.
+
+**Or build your own:**
 
 1. Fork this repository.
 2. Open the **Actions** tab and run the **Native app** workflow.
